@@ -1,26 +1,21 @@
+// src/bin/producer.rs
+
 use clap::Parser;
-use futures::StreamExt; // {{ Add StreamExt for consumer }}
+use futures::StreamExt; // For consuming the results stream
 use lapin::{
-    options::{
-        BasicAckOptions,
-        BasicConsumeOptions,
-        BasicPublishOptions,
-        QueueDeclareOptions, // {{ Added Ack/Consume }}
-    },
+    options::{BasicAckOptions, BasicConsumeOptions, BasicPublishOptions, QueueDeclareOptions},
     protocol::basic::AMQPProperties,
-    types::FieldTable, // {{ Added FieldTable }}
-    Connection,
-    ConnectionProperties,
-    Result as LapinResult,
+    types::FieldTable,
+    Connection, ConnectionProperties, Result as LapinResult,
 };
 use rust_data::config::ParquetInputConfig;
-use rust_data::data_model::TextDocument; // {{ Add TextDocument import }}
-use rust_data::error::Result;
+use rust_data::data_model::{ProcessingOutcome, TextDocument}; // Import both TextDocument and ProcessingOutcome
+use rust_data::error::{PipelineError, Result}; // Use the library's Result type
 use rust_data::pipeline::readers::ParquetReader;
-use rust_data::pipeline::writers::parquet_writer::ParquetWriter; // {{ Add ParquetWriter import }}
+use rust_data::pipeline::writers::parquet_writer::ParquetWriter;
 use serde_json;
 use std::time::Duration;
-use tokio::time::sleep; // {{ Add serde_json for deserializing results }}
+use tokio::time::sleep; // For retry delay
 
 const PARQUET_WRITE_BATCH_SIZE: usize = 500; // Configurable batch size for writing
 
@@ -45,16 +40,15 @@ struct Args {
     amqp_addr: String,
 
     /// Name of the queue to publish tasks to
-    #[arg(short = 'q', long, default_value = "task_queue")] // {{ Short arg 'q' }}
-    task_queue: String, // {{ Renamed from queue_name }}
+    #[arg(short = 'q', long, default_value = "task_queue")]
+    task_queue: String,
 
-    /// Name of the queue to consume results from
-    #[arg(short = 'r', long, default_value = "results_queue")] // {{ Added results queue arg }}
+    /// Name of the queue to consume results/outcomes from
+    #[arg(short = 'r', long, default_value = "results_queue")]
     results_queue: String,
 
     /// Path to the output Parquet file
     #[arg(short = 'o', long, default_value = "output_processed.parquet")]
-    // {{ Added output file arg }}
     output_file: String,
 }
 
@@ -97,32 +91,32 @@ async fn main() -> Result<()> {
     println!("Producer started.");
     println!("Input file: {}", args.input_file);
     println!("Task Queue: {} @ {}", args.task_queue, args.amqp_addr);
-    println!("Results Queue: {}", args.results_queue);
+    println!("Results/Outcomes Queue: {}", args.results_queue);
     println!("Output File: {}", args.output_file);
 
     // 1. Connect to RabbitMQ
     let conn = connect_rabbitmq(&args.amqp_addr).await?;
     let publish_channel = conn.create_channel().await?; // Channel for publishing tasks
 
-    // 2. Declare the task queue
-    let _task_queue_info = publish_channel // {{ Use clearer variable name }}
+    // 2. Declare the task queue (durable)
+    let _task_queue_info = publish_channel
         .queue_declare(
             &args.task_queue,
             QueueDeclareOptions {
-                durable: true,
+                durable: true, // Ensure tasks survive broker restart
                 ..Default::default()
             },
             Default::default(),
         )
         .await?;
-    // println!("Declared task queue '{}'", task_queue_info.name().as_str()); // Redundant if name matches
+    println!("Declared durable task queue '{}'", args.task_queue);
 
     // 3. Configure and create the Parquet Reader
     let parquet_config = ParquetInputConfig {
         path: args.input_file.clone(),
         text_column: args.text_column.clone(),
         id_column: args.id_column.clone(),
-        batch_size: Some(1024),
+        batch_size: Some(1024), // Example batch size for reading
     };
     let reader = ParquetReader::new(parquet_config);
 
@@ -137,90 +131,102 @@ async fn main() -> Result<()> {
             Ok(doc) => {
                 match serde_json::to_vec(&doc) {
                     Ok(payload) => {
-                        let publish_confirm = publish_channel // {{ Use publish_channel }}
+                        // Publish task persistently
+                        let publish_confirm = publish_channel
                             .basic_publish(
                                 "", // Default exchange
                                 &args.task_queue,
                                 BasicPublishOptions::default(),
                                 &payload,
-                                AMQPProperties::default().with_delivery_mode(2),
+                                AMQPProperties::default().with_delivery_mode(2), // 2 = Persistent
                             )
-                            .await?
-                            .await;
+                            .await? // Initiates publish, returns confirmation future
+                            .await; // Waits for broker ack/nack
 
                         match publish_confirm {
                             Ok(_) => {
                                 published_count += 1;
                                 if published_count % 1000 == 0 {
-                                    // Log less frequently
+                                    // Log progress periodically
                                     println!("Published {} tasks...", published_count);
                                 }
                             }
                             Err(e) => {
-                                // Consider if this should be fatal or just logged
+                                // If broker confirmation fails, this is serious.
+                                // Maybe stop, retry, or just log and potentially lose the task.
                                 eprintln!(
-                                    "Failed broker confirmation for task (Doc ID {}): {}",
+                                    "FATAL: Failed broker confirmation for task (Doc ID {}): {}. Stopping.",
                                     doc.id, e
                                 );
-                                // Maybe increment an error count here?
+                                // Decide if this error should stop the producer
+                                return Err(PipelineError::QueueError(format!(
+                                    "Publish confirmation failed: {}",
+                                    e
+                                )));
                             }
                         }
                     }
                     Err(e) => {
-                        eprintln!("Failed to serialize task (Doc ID {}): {}", doc.id, e);
+                        eprintln!(
+                            "Failed to serialize task (Doc ID {}): {}. Skipping.",
+                            doc.id, e
+                        );
                         read_errors += 1;
                     }
                 }
             }
             Err(e) => {
-                eprintln!("Error reading document for task: {}", e);
+                eprintln!("Error reading document for task: {}. Skipping.", e);
                 read_errors += 1;
             }
         }
     }
 
     println!(
-        "Producer finished publishing tasks. Published: {}, Read/Serialization Errors: {}",
+        "Producer finished publishing tasks. Total Published: {}, Read/Serialization Errors: {}",
         published_count, read_errors
     );
 
+    // Early exit if no tasks were published (nothing to wait for)
     if published_count == 0 {
         println!("No tasks were published. Exiting.");
-        // Close channel/connection before exiting early
-        // publish_channel.close(200, "No tasks published").await?;
-        // conn.close(200, "No tasks published").await?;
+        // Close channel/connection before exiting
+        // let _ = publish_channel.close(200, "No tasks published").await;
+        // let _ = conn.close(200, "No tasks published").await;
         return Ok(());
     }
 
-    // --- Phase 2: Consume results and write to Parquet ---
+    // --- Phase 2: Consume results/outcomes and write to Parquet ---
     println!("Starting results aggregation phase...");
 
     // 5. Create Channel and Declare Results Queue
-    let consume_channel = conn.create_channel().await?; // New channel for consuming results
+    let consume_channel = conn.create_channel().await?; // New channel for consuming outcomes
     let _results_queue_info = consume_channel
         .queue_declare(
             &args.results_queue,
             QueueDeclareOptions {
-                durable: true, // Should match worker's declaration
+                durable: true, // Should match worker's declaration for persistence
                 ..Default::default()
             },
             Default::default(),
         )
         .await?;
-    // println!("Declared results queue '{}'", results_queue_info.name().as_str());
+    println!("Declared durable results queue '{}'", args.results_queue);
 
     // 6. Initialize Parquet Writer
-    // Ensure the directory for the output file exists (optional but good practice)
+    // Ensure the directory for the output file exists
     if let Some(parent_dir) = std::path::Path::new(&args.output_file).parent() {
-        tokio::fs::create_dir_all(parent_dir).await?; // Create parent directories if needed
+        tokio::fs::create_dir_all(parent_dir).await?; // Create parent dirs if needed
     }
     let mut parquet_writer = ParquetWriter::new(&args.output_file)?;
     println!("Initialized Parquet writer for: {}", args.output_file);
 
-    // 7. Start Consuming Results
+    // 7. Start Consuming Outcomes
     let mut results_batch: Vec<TextDocument> = Vec::with_capacity(PARQUET_WRITE_BATCH_SIZE);
-    let mut results_received_count = 0u64;
-    let mut result_deserialization_errors = 0u64;
+    let mut outcomes_received_count = 0u64; // Count total outcomes (Success + Filtered)
+    let mut success_count = 0u64; // Count only successful documents
+    let mut filtered_count = 0u64; // Count filtered documents
+    let mut outcome_deserialization_errors = 0u64;
 
     let consumer_tag = format!(
         "producer-aggregator-{}-{}",
@@ -231,101 +237,110 @@ async fn main() -> Result<()> {
         .basic_consume(
             &args.results_queue,
             &consumer_tag,
-            BasicConsumeOptions::default(), // Auto-ack false is default
+            BasicConsumeOptions::default(), // auto_ack: false (default)
             FieldTable::default(),
         )
         .await?;
 
     println!(
-        "Waiting for results from queue '{}'. Expecting {} results.",
+        "Waiting for outcomes from queue '{}'. Expecting {} outcomes (Success or Filtered).",
         args.results_queue, published_count
     );
 
-    while let Some(delivery_result) = consumer.next().await {
-        if results_received_count >= published_count {
-            // We already received all expected messages, but more might be coming?
-            // This might indicate an issue (e.g., duplicate processing).
-            // For now, we'll log and break. Consider rejecting unexpected messages.
-            eprintln!(
-                "Warning: Received more results ({}) than tasks published ({}). Stopping consumption.",
-                results_received_count, published_count
-            );
-            // Ideally, reject the unexpected message before breaking
-            // if let Ok(delivery) = delivery_result {
-            //    let _ = delivery.nack(BasicNackOptions { requeue: false, ..Default::default() }).await;
-            // }
-            break;
+    // Loop until we have received an outcome for every task published
+    while outcomes_received_count < published_count {
+        let delivery_result = consumer.next().await;
+
+        if delivery_result.is_none() {
+            // Stream closed unexpectedly (e.g., connection lost)
+            eprintln!("ERROR: Consumer stream closed unexpectedly before receiving all outcomes.");
+            break; // Exit the loop
         }
 
-        match delivery_result {
+        match delivery_result.unwrap() {
+            // We checked for None above
             Ok(delivery) => {
-                // Deserialize result
-                match serde_json::from_slice::<TextDocument>(&delivery.data) {
-                    Ok(doc) => {
-                        results_batch.push(doc);
-                        results_received_count += 1;
+                // Deserialize the received outcome message
+                match serde_json::from_slice::<ProcessingOutcome>(&delivery.data) {
+                    Ok(outcome) => {
+                        outcomes_received_count += 1; // Increment for ANY valid outcome
 
-                        // Write batch if full
-                        if results_batch.len() >= PARQUET_WRITE_BATCH_SIZE {
-                            match parquet_writer.write_batch(&results_batch) {
-                                Ok(_) => {
-                                    println!(
-                                        "Written Parquet batch. Total results processed: {}/{}",
-                                        results_received_count, published_count
-                                    );
-                                    results_batch.clear(); // Clear batch after successful write
-                                }
-                                Err(e) => {
-                                    // Fatal error? Or log and continue? Depends on requirements.
-                                    eprintln!("FATAL: Failed to write Parquet batch: {}", e);
-                                    // Decide how to proceed: maybe stop consuming, maybe try later?
-                                    // For now, stop processing.
-                                    break;
+                        match outcome {
+                            ProcessingOutcome::Success(doc) => {
+                                success_count += 1;
+                                results_batch.push(doc);
+                                // Write batch if full
+                                if results_batch.len() >= PARQUET_WRITE_BATCH_SIZE {
+                                    match parquet_writer.write_batch(&results_batch) {
+                                        Ok(_) => {
+                                            println!(
+                                                "Written Parquet batch ({} docs). Total outcomes: {}/{}, Success: {}, Filtered: {}",
+                                                results_batch.len(), outcomes_received_count, published_count, success_count, filtered_count
+                                            );
+                                            results_batch.clear(); // Clear batch after successful write
+                                        }
+                                        Err(e) => {
+                                            // This is a critical error during writing
+                                            eprintln!("FATAL: Failed to write Parquet batch: {}. Stopping.", e);
+                                            // Ack the current message first before stopping
+                                            let _ = delivery.ack(BasicAckOptions::default()).await;
+                                            break; // Stop processing further outcomes
+                                        }
+                                    }
                                 }
                             }
+                            ProcessingOutcome::Filtered { id, reason } => {
+                                filtered_count += 1;
+                                // Log filtered document, don't add to batch
+                                println!(
+                                    "Outcome: Filtered ID: {} (Reason: {}). Progress: {}/{}, Success: {}, Filtered: {}",
+                                    id, reason, outcomes_received_count, published_count, success_count, filtered_count
+                                );
+                            } // Handle ProcessingOutcome::Error here if added later
                         }
                     }
                     Err(e) => {
-                        result_deserialization_errors += 1;
+                        // Handle malformed outcome messages (poison pills)
+                        outcome_deserialization_errors += 1;
                         eprintln!(
-                            "Failed to deserialize result message {}: {}. Payload: {:?}",
+                            "Failed to deserialize outcome message {}: {}. Payload: {:?}",
                             delivery.delivery_tag,
                             e,
                             std::str::from_utf8(&delivery.data).unwrap_or("[invalid utf8]")
                         );
-                        // Acknowledge the poison pill result to remove it
+                        // Acknowledge the poison pill outcome to remove it from queue
                     }
                 }
 
-                // Acknowledge the result message
+                // Acknowledge the outcome message *after* processing it
                 if let Err(ack_err) = delivery.ack(BasicAckOptions::default()).await {
                     eprintln!(
-                        "Failed to ack result message {}: {}",
+                        "Failed to ack outcome message {}: {}. This might lead to duplicate processing counts.",
                         delivery.delivery_tag, ack_err
                     );
-                    // This could lead to duplicate processing if the worker resends.
-                    // Consider how to handle persistent ack failures.
-                }
-
-                // Check if all expected results have been processed (after acking)
-                if results_received_count == published_count {
-                    println!("All expected results received ({})", published_count);
-                    break; // Exit the consumption loop
+                    // Consider how to handle persistent ack failures. Maybe stop?
                 }
             }
             Err(e) => {
-                eprintln!("Error receiving result message from consumer stream: {}", e);
+                // Handle errors in receiving messages from RabbitMQ (e.g., channel closed)
+                eprintln!(
+                    "Error receiving outcome message from consumer stream: {}",
+                    e
+                );
                 break; // Stop consuming if the stream breaks
             }
         }
     }
 
-    println!("Finished consuming results.");
+    println!(
+        "Finished consuming outcomes (Received {}/{} expected).",
+        outcomes_received_count, published_count
+    );
 
     // 8. Write any remaining documents in the final batch
     if !results_batch.is_empty() {
         println!(
-            "Writing final batch of {} documents...",
+            "Writing final batch of {} successfully processed documents...",
             results_batch.len()
         );
         match parquet_writer.write_batch(&results_batch) {
@@ -339,7 +354,7 @@ async fn main() -> Result<()> {
         }
     }
 
-    // 9. Close the Parquet writer
+    // 9. Close the Parquet writer (essential!)
     println!("Closing Parquet writer...");
     if let Err(e) = parquet_writer.close() {
         eprintln!("ERROR: Failed to close Parquet writer cleanly: {}", e);
@@ -351,22 +366,28 @@ async fn main() -> Result<()> {
     println!("--------------------");
     println!("Processing Summary:");
     println!("  Tasks Published: {}", published_count);
-    println!("  Read/Serialization Errors (Producer): {}", read_errors);
-    println!("  Results Received: {}", results_received_count);
+    println!("  Task Read/Serialization Errors: {}", read_errors);
+    println!("  Outcomes Received (Total): {}", outcomes_received_count);
+    println!("    - Successfully Processed: {}", success_count);
+    println!("    - Filtered by Worker: {}", filtered_count);
     println!(
-        "  Result Deserialization Errors (Producer): {}",
-        result_deserialization_errors
+        "  Outcome Deserialization Errors: {}",
+        outcome_deserialization_errors
     );
     println!("  Output File: {}", args.output_file);
     println!("--------------------");
 
-    // Optional: Close channels/connection gracefully
-    // consume_channel.close(200, "Producer finished aggregation").await?;
-    // publish_channel.close(200, "Producer finished").await?; // Ensure publish channel is closed too
-    // conn.close(200, "Producer finished").await?;
+    // Optional: Graceful shutdown of channels and connection
+    // let _ = consume_channel.close(200, "Producer finished aggregation").await;
+    // let _ = publish_channel.close(200, "Producer finished publishing").await;
+    // let _ = conn.close(200, "Producer finished").await;
 
-    if results_received_count != published_count {
-        eprintln!("Warning: Number of results received ({}) does not match tasks published ({}). Output might be incomplete.", results_received_count, published_count);
+    // Final check for mismatch
+    if outcomes_received_count != published_count {
+        eprintln!(
+            "Warning: Number of outcomes received ({}) does not match tasks published ({}). Output might be incomplete or counts inaccurate due to errors or message loss.",
+            outcomes_received_count, published_count
+        );
     }
 
     Ok(())

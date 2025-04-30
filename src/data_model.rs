@@ -1,5 +1,5 @@
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use serde::{Serialize, Deserialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)] // Clone might be needed depending on ownership strategy
 pub struct TextDocument {
@@ -12,3 +12,15 @@ pub struct TextDocument {
 }
 
 // TODO: Add more fields as they are discovered
+
+/// Represents the outcome of processing a single document task.
+/// This is sent from the worker back to the producer via the results queue.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ProcessingOutcome {
+    /// The document was successfully processed through all pipeline steps.
+    Success(TextDocument),
+    /// The document was filtered out by one of the pipeline steps.
+    Filtered { id: String, reason: String },
+    // Potential future extension:
+    // Error { id: String, error_details: String },
+}
