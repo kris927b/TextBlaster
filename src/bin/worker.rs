@@ -6,15 +6,25 @@ use rust_data::executor::{PipelineExecutor, ProcessingStep};
 // Import necessary filters (adjust if steps change)
 use arrow::datatypes::ArrowNativeType;
 use lapin::{
-    options::{BasicAckOptions, BasicConsumeOptions, BasicQosOptions, QueueDeclareOptions},
+    options::{
+        BasicAckOptions,
+        BasicConsumeOptions,
+        BasicPublishOptions,
+        BasicQosOptions, // Added BasicPublishOptions
+        QueueDeclareOptions,
+    },
+    protocol::basic::AMQPProperties, // Added AMQPProperties
     types::FieldTable,
-    Connection, ConnectionProperties, Result as LapinResult,
+    Connection,
+    ConnectionProperties,
+    Result as LapinResult,
 };
 use rust_data::pipeline::filters::{C4QualityFilter, GopherQualityFilter, GopherRepetitionFilter};
 use rust_data::utils::text::DANISH_STOP_WORDS; // If GopherQualityFilter uses it
+use serde_json;
 use std::sync::Arc; // To share the executor across potential concurrent tasks
 use std::time::Duration;
-use tokio::time::sleep; // Needed for as_usize()
+use tokio::time::sleep; // Needed for as_usize() // {{ Add serde_json for result serialization }}
 
 // Define command-line arguments
 #[derive(Parser, Debug)]
@@ -26,7 +36,11 @@ struct Args {
 
     /// Name of the queue to consume tasks from
     #[arg(short, long, default_value = "task_queue")]
-    queue_name: String,
+    task_queue: String, // {{ Renamed from queue_name for clarity }}
+
+    /// Name of the queue to publish results to
+    #[arg(short, long, default_value = "results_queue")] // {{ Added results queue arg }}
+    results_queue: String,
 
     /// Prefetch count (how many messages to buffer locally)
     #[arg(long, default_value_t = 10)] // Adjust based on task duration/resources
@@ -106,8 +120,10 @@ async fn main() -> Result<()> {
 
     println!("Worker starting.");
     println!(
-        "Consuming from queue '{}' @ {}",
-        args.queue_name, args.amqp_addr
+        "Consuming from queue '{}', publishing results to '{}' @ {}", // {{ Updated log }}
+        args.task_queue,
+        args.results_queue,
+        args.amqp_addr // {{ Updated log }}
     );
     println!("Prefetch count: {}", args.prefetch_count);
 
@@ -116,14 +132,21 @@ async fn main() -> Result<()> {
         .await
         .map_err(|e| PipelineError::QueueError(format!("Worker failed to connect: {}", e)))?;
 
-    let channel = conn.create_channel().await.map_err(|e| {
-        PipelineError::QueueError(format!("Worker failed to create channel: {}", e))
+    // Create two channels: one for consuming tasks, one for publishing results
+    // This avoids potential channel-level blocking issues if one operation stalls.
+    let consume_channel = conn.create_channel().await.map_err(|e| {
+        // {{ Renamed channel }}
+        PipelineError::QueueError(format!("Worker failed to create consume channel: {}", e))
+    })?;
+    let publish_channel = conn.create_channel().await.map_err(|e| {
+        // {{ Added publish channel }}
+        PipelineError::QueueError(format!("Worker failed to create publish channel: {}", e))
     })?;
 
-    // 2. Declare the same queue (ensure durability matches producer)
-    let _queue = channel // Use _queue as we only need to ensure it exists
+    // 2. Declare the task queue (ensure durability matches producer)
+    let _task_queue = consume_channel // {{ Use consume_channel }}
         .queue_declare(
-            &args.queue_name,
+            &args.task_queue, // {{ Use task_queue arg }}
             QueueDeclareOptions {
                 durable: true, // MUST match the producer's declaration
                 ..Default::default()
@@ -131,106 +154,163 @@ async fn main() -> Result<()> {
             Default::default(),
         )
         .await
-        .map_err(|e| PipelineError::QueueError(format!("Worker failed to declare queue: {}", e)))?;
+        .map_err(|e| {
+            PipelineError::QueueError(format!("Worker failed to declare task queue: {}", e))
+        })?;
 
-    // 3. Set Quality of Service (Prefetch Count)
-    // This tells RabbitMQ how many messages this worker can handle concurrently
-    // before needing acknowledgements. Prevents overwhelming the worker.
-    channel
+    // 2b. Declare the results queue (also durable)
+    let _results_queue = publish_channel // {{ Use publish_channel }}
+        .queue_declare(
+            &args.results_queue, // {{ Use results_queue arg }}
+            QueueDeclareOptions {
+                durable: true, // Results should also survive restarts
+                ..Default::default()
+            },
+            Default::default(),
+        )
+        .await
+        .map_err(|e| {
+            PipelineError::QueueError(format!("Worker failed to declare results queue: {}", e))
+        })?;
+
+    // 3. Set Quality of Service (Prefetch Count) on the consume channel
+    consume_channel // {{ Use consume_channel }}
         .basic_qos(args.prefetch_count, BasicQosOptions::default())
         .await
         .map_err(|e| PipelineError::QueueError(format!("Failed to set QoS: {}", e)))?;
 
-    // 4. Create the Pipeline Executor (potentially shareable)
+    // 4. Create the Pipeline Executor
     let pipeline_steps = build_pipeline();
     if pipeline_steps.is_empty() {
         println!("Warning: Starting worker with an empty pipeline!");
     }
-    let executor = Arc::new(PipelineExecutor::new(pipeline_steps)); // Arc allows sharing if needed
+    let executor = Arc::new(PipelineExecutor::new(pipeline_steps));
 
-    // 5. Start Consuming Messages
+    // 5. Start Consuming Messages from the task queue
     let consumer_tag = format!(
         "worker-{}-{}",
         std::process::id(),
         chrono::Utc::now().timestamp()
-    ); // Unique consumer tag
-    let mut consumer = channel
+    );
+    let mut consumer = consume_channel // {{ Use consume_channel }}
         .basic_consume(
-            &args.queue_name,
-            &consumer_tag,                  // Unique identifier for this consumer
-            BasicConsumeOptions::default(), // Auto-ack is false by default, which is good
+            &args.task_queue, // {{ Use task_queue arg }}
+            &consumer_tag,
+            BasicConsumeOptions::default(),
             FieldTable::default(),
         )
         .await
         .map_err(|e| PipelineError::QueueError(format!("Failed to start consuming: {}", e)))?;
 
-    println!("Worker started consuming. Waiting for messages...");
+    println!("Worker started consuming tasks. Waiting for messages...");
 
     // 6. Process messages from the stream
-    // The consumer object is a stream of Deliveries
     while let Some(delivery_result) = consumer.next().await {
         match delivery_result {
             Ok(delivery) => {
-                // Got a message
-                let executor_clone = Arc::clone(&executor); // Clone Arc for the async task
-                                                            // Spawn a Tokio task to process the message concurrently
-                                                            // This allows processing multiple messages up to the prefetch limit
+                let executor_clone = Arc::clone(&executor);
+                let publish_channel_clone = publish_channel.clone(); // {{ Clone publish channel for the task }}
+                let results_queue_name = args.results_queue.clone(); // {{ Clone results queue name }}
+
                 tokio::spawn(async move {
-                    // Deserialize
                     match serde_json::from_slice::<TextDocument>(&delivery.data) {
                         Ok(doc) => {
-                            println!("Processing document ID: {}", doc.id);
-                            // Run the pipeline
+                            let doc_id = doc.id.clone(); // Clone id for logging in case of error
+                            println!("Processing document ID: {}", doc_id);
                             match executor_clone.run_single_async(doc).await {
                                 Ok(processed_doc) => {
                                     println!(
                                         "Successfully processed document ID: {}",
                                         processed_doc.id
                                     );
-                                    // Acknowledge the message
+
+                                    // {{ Start: Publish result to results_queue }}
+                                    match serde_json::to_vec(&processed_doc) {
+                                        Ok(payload) => {
+                                            let publish_confirm = publish_channel_clone
+                                                .basic_publish(
+                                                    "", // Default exchange
+                                                    &results_queue_name,
+                                                    BasicPublishOptions::default(),
+                                                    &payload,
+                                                    AMQPProperties::default().with_delivery_mode(2), // Persistent
+                                                )
+                                                .await;
+
+                                            match publish_confirm {
+                                                Ok(confirmation) => {
+                                                    match confirmation.await {
+                                                        // Wait for broker confirmation
+                                                        Ok(_) => {
+                                                            println!(
+                                                                "Published result for doc ID: {}",
+                                                                processed_doc.id
+                                                            );
+                                                        }
+                                                        Err(e) => {
+                                                            eprintln!("Failed publish confirmation for result {}: {}", processed_doc.id, e);
+                                                            // Decide how to handle: maybe nack the original task?
+                                                            // For now, just log and proceed to ack original task.
+                                                        }
+                                                    }
+                                                }
+                                                Err(e) => {
+                                                    eprintln!("Failed to publish result for doc ID {}: {}", processed_doc.id, e);
+                                                    // Decide how to handle. For now, just log.
+                                                }
+                                            }
+                                        }
+                                        Err(e) => {
+                                            eprintln!(
+                                                "Failed to serialize result for doc ID {}: {}",
+                                                processed_doc.id, e
+                                            );
+                                            // Decide how to handle. For now, just log.
+                                        }
+                                    }
+                                    // {{ End: Publish result to results_queue }}
+
+                                    // Acknowledge the original task message *after* attempting to publish result
                                     if let Err(ack_err) =
                                         delivery.ack(BasicAckOptions::default()).await
                                     {
                                         eprintln!(
-                                            "Failed to ack message {}: {}",
-                                            delivery.delivery_tag, ack_err
+                                            "Failed to ack task message {} for doc ID {}: {}",
+                                            delivery.delivery_tag,
+                                            doc_id,
+                                            ack_err // Use cloned doc_id
                                         );
-                                        // Potential issue: message might be redelivered if ack fails consistently
                                     }
                                 }
                                 Err(e) => {
-                                    // Processing failed (e.g., filtered out, step error)
                                     eprintln!(
                                         "Pipeline error processing doc ID {}: {}",
-                                        delivery.delivery_tag, e
+                                        doc_id,
+                                        e // Use cloned doc_id
                                     );
-                                    // Decide how to handle: nack/reject? dead-letter queue? For now, just ack as processed (but failed).
-                                    // Acknowledging prevents infinite retries for documents that will always fail processing.
+                                    // Acknowledge the failed task to remove from queue
                                     if let Err(ack_err) =
                                         delivery.ack(BasicAckOptions::default()).await
                                     {
                                         eprintln!(
-                                            "Failed to ack message {} after processing error: {}",
-                                            delivery.delivery_tag, ack_err
+                                            "Failed to ack task message {} after processing error for doc ID {}: {}",
+                                            delivery.delivery_tag, doc_id, ack_err // Use cloned doc_id
                                         );
                                     }
-                                    // Alternative: Nack without requeue (moves to dead-letter queue if configured)
-                                    // channel_ref.basic_nack(delivery.delivery_tag, BasicNackOptions { multiple: false, requeue: false }).await;
                                 }
                             }
                         }
                         Err(e) => {
-                            // Deserialization failed - message is likely corrupt
                             eprintln!(
-                                "Failed to deserialize message {}: {}. Payload: {:?}",
+                                "Failed to deserialize task message {}: {}. Payload: {:?}",
                                 delivery.delivery_tag,
                                 e,
                                 std::str::from_utf8(&delivery.data).unwrap_or("[invalid utf8]")
                             );
-                            // Acknowledge the poison pill message to remove it from the queue
+                            // Acknowledge the poison pill task message
                             if let Err(ack_err) = delivery.ack(BasicAckOptions::default()).await {
                                 eprintln!(
-                                    "Failed to ack message {} after deserialization error: {}",
+                                    "Failed to ack task message {} after deserialization error: {}",
                                     delivery.delivery_tag, ack_err
                                 );
                             }
@@ -239,18 +319,17 @@ async fn main() -> Result<()> {
                 });
             }
             Err(e) => {
-                // Error receiving message from the stream (e.g., channel closed)
-                eprintln!("Error receiving message from consumer stream: {}", e);
-                // Attempt to reconnect or terminate? For simplicity, break the loop.
-                break;
+                eprintln!("Error receiving task message from consumer stream: {}", e);
+                break; // Stop the worker if the connection breaks
             }
         }
     }
 
-    println!("Worker stopped consuming.");
-    // Optional: Close channel/connection gracefully
-    // channel.close(200, "Worker finished").await?;
+    println!("Worker stopped consuming tasks.");
+    // Optional: Close channels/connection gracefully
+    // consume_channel.close(200, "Worker finished").await?;
+    // publish_channel.close(200, "Worker finished").await?;
     // conn.close(200, "Worker finished").await?;
 
-    Ok(()) // Should ideally not be reached unless consumption stops
+    Ok(())
 }
