@@ -26,14 +26,14 @@ The system consists of two main components: a `producer` and one or more `worker
 ```mermaid
 graph LR
     A[Input Parquet File] --> P(Producer);
-    P -->|Task (JSON Doc)| Q1(RabbitMQ Task Queue);
-    Q1 -->|Task (JSON Doc)| W1(Worker 1);
-    Q1 -->|Task (JSON Doc)| W2(Worker 2);
-    Q1 -->|Task (JSON Doc)| WN(Worker N);
-    W1 -->|Result (JSON Doc)| Q2(RabbitMQ Results Queue);
-    W2 -->|Result (JSON Doc)| Q2;
-    WN -->|Result (JSON Doc)| Q2;
-    Q2 -->|Result (JSON Doc)| P;
+    P -->|"Task (JSON Doc)"| Q1(RabbitMQ Task Queue);
+    Q1 -->|"Task (JSON Doc)"| W1(Worker 1);
+    Q1 -->|"Task (JSON Doc)"| W2(Worker 2);
+    Q1 -->|"Task (JSON Doc)"| WN(Worker N);
+    W1 -->|"Result (JSON Doc)"| Q2(RabbitMQ Results Queue);
+    W2 -->|"Result (JSON Doc)"| Q2;
+    WN -->|"Result (JSON Doc)"| Q2;
+    Q2 -->|"Result (JSON Doc)"| P;
     P --> O[Output Parquet File];
 ```
 
