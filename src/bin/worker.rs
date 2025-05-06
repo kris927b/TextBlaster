@@ -2,11 +2,13 @@
 
 use clap::Parser;
 use futures::StreamExt; // For processing the consumer stream
+use rust_data::config::{PipelineConfig, StepConfig}; // Added config imports
 use rust_data::data_model::{ProcessingOutcome, TextDocument}; // Updated import
 use rust_data::error::{PipelineError, Result}; // Use the library's Result type
 use rust_data::executor::{PipelineExecutor, ProcessingStep};
 // Import necessary filters (adjust if steps change)
-use arrow::datatypes::ArrowNativeType; // Needed for as_usize() in build_pipeline
+// {{ Remove ArrowNativeType import if no longer needed directly here }}
+// use arrow::datatypes::ArrowNativeType;
 use lapin::{
     options::{
         BasicAckOptions,
@@ -22,8 +24,10 @@ use lapin::{
     Result as LapinResult,
 };
 use rust_data::pipeline::filters::{C4QualityFilter, GopherQualityFilter, GopherRepetitionFilter};
-use rust_data::utils::text::DANISH_STOP_WORDS; // If GopherQualityFilter uses it
+// If GopherQualityFilter uses it
 use serde_json;
+use std::fs;
+use std::path::PathBuf;
 use std::sync::Arc; // To share the executor across potential concurrent tasks
 use std::time::Duration;
 use tokio::time::sleep; // {{ Add serde_json for result serialization }}
@@ -49,6 +53,11 @@ struct Args {
     /// Prefetch count (how many messages to buffer locally)
     #[arg(long, default_value_t = 10)] // Adjust based on task duration/resources
     prefetch_count: u16,
+
+    // {{ Add argument for pipeline configuration file }}
+    /// Path to the pipeline configuration YAML file.
+    #[arg(short = 'c', long, default_value = "config/pipeline_config.yaml")]
+    pipeline_config: PathBuf,
 }
 
 // Re-use the connection helper from producer (or move to lib.rs if desired)
@@ -78,44 +87,55 @@ async fn connect_rabbitmq(addr: &str) -> LapinResult<Connection> {
     }
 }
 
-// Function to build the pipeline (similar to old main.rs)
-// Consider moving pipeline construction logic to config.rs or a dedicated builder later
-fn build_pipeline() -> Vec<Box<dyn ProcessingStep>> {
-    vec![
-        Box::new(C4QualityFilter::new(
-            10.as_usize(), // Example values
-            3.as_usize(),
-            100.as_usize(),
-        )),
-        Box::new(GopherRepetitionFilter::new(
-            Some(0.3),
-            Some(0.3),
-            Some(0.2),
-            Some(0.2),
-            vec![(2, 0.2), (3, 0.18), (4, 0.16)],
-            vec![
-                (5, 0.15),
-                (6, 0.14),
-                (7, 0.13),
-                (8, 0.12),
-                (9, 0.11),
-                (10, 0.10),
-            ],
-        )),
-        Box::new(GopherQualityFilter::new(
-            Some(50),
-            Some(1000000),
-            Some(3.0),
-            Some(10.0),
-            Some(0.1),
-            Some(0.9),
-            Some(0.3),
-            Some(0.8),
-            Some(2),
-            Some(DANISH_STOP_WORDS.iter().map(|s| s.to_string()).collect()),
-        )),
-        // Add other steps as needed
-    ]
+// {{ Add the new function to build pipeline from configuration }}
+/// Builds the processing pipeline based on the configuration read from YAML.
+fn build_pipeline_from_config(config: &PipelineConfig) -> Result<Vec<Box<dyn ProcessingStep>>> {
+    let mut steps: Vec<Box<dyn ProcessingStep>> = Vec::new();
+
+    for step_config in &config.pipeline {
+        let step: Box<dyn ProcessingStep> = match step_config {
+            StepConfig::C4QualityFilter(params) => {
+                println!("Adding C4QualityFilter with params: {:?}", params);
+                Box::new(C4QualityFilter::new(
+                    params.min_sentences,
+                    params.min_words_per_sentence,
+                    params.max_word_length,
+                ))
+            }
+            StepConfig::GopherRepetitionFilter(params) => {
+                println!("Adding GopherRepetitionFilter with params: {:?}", params);
+                Box::new(GopherRepetitionFilter::new(
+                    params.dup_line_frac,
+                    params.dup_para_frac,
+                    params.dup_line_char_frac,
+                    params.dup_para_char_frac,
+                    params.top_n_grams.clone(), // Clone the vec
+                    params.dup_n_grams.clone(), // Clone the vec
+                ))
+            }
+            StepConfig::GopherQualityFilter(params) => {
+                println!("Adding GopherQualityFilter with params: {:?}", params);
+                Box::new(GopherQualityFilter::new(
+                    params.min_doc_words,
+                    params.max_doc_words,
+                    params.min_avg_word_length,
+                    params.max_avg_word_length,
+                    params.max_symbol_word_ratio,
+                    params.max_bullet_lines_ratio,
+                    params.max_ellipsis_lines_ratio,
+                    params.max_non_alpha_words_ratio,
+                    params.min_stop_words,
+                    params.stop_words.clone(), // Clone the Option<Vec<String>>
+                ))
+            } // Add cases for other StepConfig variants here if you define more
+        };
+        steps.push(step);
+    }
+
+    if steps.is_empty() {
+        println!("Warning: Building an empty pipeline from configuration!");
+    }
+    Ok(steps)
 }
 
 #[tokio::main]
@@ -123,11 +143,32 @@ async fn main() -> Result<()> {
     let args = Args::parse();
 
     println!("Worker starting.");
+    // {{ Log the config file being used }}
+    println!(
+        "Loading pipeline configuration from: {}",
+        args.pipeline_config.display()
+    );
     println!(
         "Consuming from queue '{}', publishing outcomes to '{}' @ {}", // Updated log
         args.task_queue, args.results_queue, args.amqp_addr
     );
     println!("Prefetch count: {}", args.prefetch_count);
+
+    // {{ Load and parse the pipeline configuration }}
+    let config_content = fs::read_to_string(&args.pipeline_config).map_err(|e| {
+        PipelineError::ConfigError(format!(
+            "Failed to read pipeline config file '{}': {}",
+            args.pipeline_config.display(),
+            e
+        ))
+    })?;
+    let pipeline_config: PipelineConfig = serde_yaml::from_str(&config_content).map_err(|e| {
+        PipelineError::ConfigError(format!(
+            "Failed to parse pipeline config YAML from '{}': {}",
+            args.pipeline_config.display(),
+            e
+        ))
+    })?;
 
     // 1. Connect to RabbitMQ
     let conn = connect_rabbitmq(&args.amqp_addr)
@@ -179,11 +220,10 @@ async fn main() -> Result<()> {
         .await
         .map_err(|e| PipelineError::QueueError(format!("Failed to set QoS: {}", e)))?;
 
-    // 4. Create the Pipeline Executor
-    let pipeline_steps = build_pipeline();
-    if pipeline_steps.is_empty() {
-        println!("Warning: Starting worker with an empty pipeline!");
-    }
+    // 4. Create the Pipeline Executor using the configuration
+    // {{ Replace temporary variable with call to build_pipeline_from_config }}
+    let pipeline_steps = build_pipeline_from_config(&pipeline_config)?;
+    // The warning inside build_pipeline_from_config already covers the empty case
     let executor = Arc::new(PipelineExecutor::new(pipeline_steps));
 
     // 5. Start Consuming Messages from the task queue

@@ -27,6 +27,7 @@ lapin = { version = "2.5.3", features = ["native-tls"] }
 tokio-executor-trait = "2.1"
 tokio-reactor-trait = "1.1"
 chrono = "0.4.41"
+serde_yaml = "0.9.34"
 
 # {{ Define the library (implicitly done by having src/lib.rs) }}
 # [lib]

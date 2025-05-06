@@ -1,0 +1,55 @@
+pipeline:
+  - type: C4QualityFilter
+    min_sentences: 10
+    min_words_per_sentence: 3
+    max_word_length: 100
+
+  - type: GopherRepetitionFilter
+    dup_line_frac: 0.3
+    dup_para_frac: 0.3
+    dup_line_char_frac: 0.2
+    dup_para_char_frac: 0.2
+    top_n_grams:
+      - [2, 0.2]
+      - [3, 0.18]
+      - [4, 0.16]
+    dup_n_grams:
+      - [5, 0.15]
+      - [6, 0.14]
+      - [7, 0.13]
+      - [8, 0.12]
+      - [9, 0.11]
+      - [10, 0.10]
+
+  - type: GopherQualityFilter
+    min_doc_words: 50
+    max_doc_words: 1000000
+    min_avg_word_length: 3.0
+    max_avg_word_length: 10.0
+    max_symbol_word_ratio: 0.1
+    max_bullet_lines_ratio: 0.9
+    max_ellipsis_lines_ratio: 0.3
+    max_non_alpha_words_ratio: 0.8
+    min_stop_words: 2
+    # Explicitly list the Danish stop words used previously.
+    # If you want to use the filter's internal default, omit 'stop_words'.
+    stop_words: [
+        "ad", "af", "aldrig", "alle", "alt", "altid", "anden", "andet", "andre", "at", "bare",
+        "begge", "blev", "blive", "bliver", "burde", "bør", "da", "de", "dem", "den", "denne",
+        "der", "deres", "det", "dette", "dig", "din", "dine", "disse", "dit", "dog", "du", "efter",
+        "egen", "eller", "en", "end", "endnu", "ene", "eneste", "enhver", "ens", "enten", "er",
+        "et", "far", "fem", "fik", "fire", "flere", "flest", "fleste", "for", "foran", "fordi",
+        "fordi", "forrige", "fra", "få", "får", "før", "først", "gennem", "gjorde", "gøre", "gør",
+        "gå", "går", "ham", "han", "hans", "har", "havde", "have", "hej", "helt", "hende", "hendes",
+        "her", "hos", "hun", "hvad", "hvem", "hver", "hvilken", "hvis", "hvor", "hvordan",
+        "hvorfor", "hvornår", "i", "ikke", "ind", "ingen", "intet", "ja", "jeg", "jer", "jeres",
+        "jo", "kan", "kom", "komme", "kommer", "kun", "kunne", "lade", "lav", "lidt", "lige",
+        "ligesom", "lille", "man", "mand", "mange", "med", "meget", "men", "mens", "mere", "mig",
+        "min", "mine", "mit", "mod", "må", "ned", "nej", "ni", "nogen", "nogensinde", "noget",
+        "nogle", "nok", "nu", "ny", "nyt", "når", "nær", "næste", "næsten", "og", "også", "okay",
+        "om", "op", "os", "otte", "over", "på", "se", "seks", "selv", "selvom", "senere", "ser",
+        "ses", "set", "sig", "sige", "sin", "sine", "sit", "skal", "skulle", "som", "stor", "store",
+        "syv", "så", "sådan", "tag", "tage", "thi", "ti", "tidligere", "til", "tilbage", "tit",
+        "to", "tre", "ud", "uden", "under", "undtagen", "var", "ved", "vi", "vil", "ville", "vor",
+        "vore", "vores", "vær", "være", "været", "øh"
+    ]
