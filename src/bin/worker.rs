@@ -2,7 +2,8 @@
 
 use clap::Parser;
 use futures::StreamExt; // For processing the consumer stream
-use rust_data::config::{PipelineConfig, StepConfig}; // Added config imports
+                        // {{ Use the new load_pipeline_config function }}
+use rust_data::config::{load_pipeline_config, PipelineConfig, StepConfig}; // Added config imports and load_pipeline_config
 use rust_data::data_model::{ProcessingOutcome, TextDocument}; // Updated import
 use rust_data::error::{PipelineError, Result}; // Use the library's Result type
 use rust_data::executor::{PipelineExecutor, ProcessingStep};
@@ -26,7 +27,6 @@ use lapin::{
 use rust_data::pipeline::filters::{C4QualityFilter, GopherQualityFilter, GopherRepetitionFilter};
 // If GopherQualityFilter uses it
 use serde_json;
-use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc; // To share the executor across potential concurrent tasks
 use std::time::Duration;
@@ -155,20 +155,7 @@ async fn main() -> Result<()> {
     println!("Prefetch count: {}", args.prefetch_count);
 
     // {{ Load and parse the pipeline configuration }}
-    let config_content = fs::read_to_string(&args.pipeline_config).map_err(|e| {
-        PipelineError::ConfigError(format!(
-            "Failed to read pipeline config file '{}': {}",
-            args.pipeline_config.display(),
-            e
-        ))
-    })?;
-    let pipeline_config: PipelineConfig = serde_yaml::from_str(&config_content).map_err(|e| {
-        PipelineError::ConfigError(format!(
-            "Failed to parse pipeline config YAML from '{}': {}",
-            args.pipeline_config.display(),
-            e
-        ))
-    })?;
+    let pipeline_config: PipelineConfig = load_pipeline_config(&args.pipeline_config)?;
 
     // 1. Connect to RabbitMQ
     let conn = connect_rabbitmq(&args.amqp_addr)

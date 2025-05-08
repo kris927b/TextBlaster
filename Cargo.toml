@@ -42,4 +42,7 @@ path = "src/bin/producer.rs"
 name = "worker"
 path = "src/bin/worker.rs"
 
+[dev-dependencies]
+tempfile = "3.19.1"
+
 # {{ No need for the old default main.rs binary now }}
