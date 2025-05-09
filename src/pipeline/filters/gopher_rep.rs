@@ -127,125 +127,203 @@ impl ProcessingStep for GopherRepetitionFilter {
     }
 
     async fn process(&self, document: TextDocument) -> Result<TextDocument> {
-        let text = &document.content;
-        let text_char_len = text.chars().count().max(1);
+        let mut document = document; // Make document mutable to modify metadata
 
-        let trimmed_text = text.trim();
+        let text_content = &document.content;
+        // Base character length on trimmed text for consistency with paragraph/line/word splitting
+        let trimmed_text = text_content.trim();
+        let text_char_len = trimmed_text.chars().count().max(1) as f64;
+
         if trimmed_text.is_empty() {
+            document.metadata.insert(
+                "gopher_repetition_filter_status".to_string(),
+                "skipped_empty_content".to_string(),
+            );
+            // Add 0.0 for all potential ratios for consistency if downstream expects them
+            // For thresholds that are Some (i.e., active)
+            if self.dup_para_frac.is_some() {
+                document.metadata.insert(
+                    "gopher_dup_para_elems_ratio".to_string(),
+                    "0.0000".to_string(),
+                );
+            }
+            if self.dup_para_char_frac.is_some() {
+                document.metadata.insert(
+                    "gopher_dup_para_chars_ratio".to_string(),
+                    "0.0000".to_string(),
+                );
+            }
+            if self.dup_line_frac.is_some() {
+                document.metadata.insert(
+                    "gopher_dup_line_elems_ratio".to_string(),
+                    "0.0000".to_string(),
+                );
+            }
+            if self.dup_line_char_frac.is_some() {
+                document.metadata.insert(
+                    "gopher_dup_line_chars_ratio".to_string(),
+                    "0.0000".to_string(),
+                );
+            }
+            // For configured n-grams
+            for &(n, _) in &self.top_n_grams {
+                document.metadata.insert(
+                    format!("gopher_top_{}_gram_char_ratio", n),
+                    "0.0000".to_string(),
+                );
+            }
+            for &(n, _) in &self.dup_n_grams {
+                document.metadata.insert(
+                    format!("gopher_all_dup_{}_gram_char_ratio", n),
+                    "0.0000".to_string(),
+                );
+            }
             return Ok(document);
         }
 
+        let mut filter_reasons: Vec<String> = Vec::new();
+
         // Paragraph checks
+        // self.paragraph_exp.split() will yield at least one item if trimmed_text is not empty.
         let paragraphs: Vec<String> = self
             .paragraph_exp
             .split(trimmed_text)
             .map(str::to_string)
             .collect();
-        if !paragraphs.is_empty() {
-            let (para_dup_elems, para_dup_chars) = find_duplicates(&paragraphs);
-            let para_len = paragraphs.len() as f64;
 
-            if let Some(threshold) = self.dup_para_frac {
-                let ratio = para_dup_elems as f64 / para_len;
-                if ratio > threshold {
-                    return Err(PipelineError::DocumentFiltered {
-                        doc_id: document.id.clone(),
-                        // Ensure detailed reason
-                        reason: format!("dup_para_frac (ratio {:.2}, max {:.2})", ratio, threshold),
-                    });
-                }
+        let (para_dup_elems, para_dup_chars) = find_duplicates(&paragraphs);
+        // paragraphs.len() will be >= 1 if trimmed_text is not empty. Use .max(1) as a safeguard.
+        let para_len = paragraphs.len().max(1) as f64;
+
+        let ratio_para_dup_elems = para_dup_elems as f64 / para_len;
+        document.metadata.insert(
+            "gopher_dup_para_elems_ratio".to_string(),
+            format!("{:.4}", ratio_para_dup_elems),
+        );
+        if let Some(threshold) = self.dup_para_frac {
+            if ratio_para_dup_elems > threshold {
+                filter_reasons.push(format!(
+                    "dup_para_frac (ratio {:.2}, max {:.2})",
+                    ratio_para_dup_elems, threshold
+                ));
             }
-            if let Some(threshold) = self.dup_para_char_frac {
-                let ratio = para_dup_chars as f64 / text_char_len as f64;
-                if ratio > threshold {
-                    return Err(PipelineError::DocumentFiltered {
-                        doc_id: document.id.clone(),
-                        // Ensure detailed reason
-                        reason: format!(
-                            "dup_para_char_frac (ratio {:.2}, max {:.2})",
-                            ratio, threshold
-                        ),
-                    });
-                }
+        }
+
+        let ratio_para_dup_chars = para_dup_chars as f64 / text_char_len;
+        document.metadata.insert(
+            "gopher_dup_para_chars_ratio".to_string(),
+            format!("{:.4}", ratio_para_dup_chars),
+        );
+        if let Some(threshold) = self.dup_para_char_frac {
+            if ratio_para_dup_chars > threshold {
+                filter_reasons.push(format!(
+                    "dup_para_char_frac (ratio {:.2}, max {:.2})",
+                    ratio_para_dup_chars, threshold
+                ));
             }
         }
 
         // Line checks
+        // self.line_splitter.split() will yield at least one item if trimmed_text is not empty.
         let lines: Vec<String> = self
             .line_splitter
             .split(trimmed_text)
             .map(str::to_string)
             .collect();
-        if !lines.is_empty() {
-            let (line_dup_elems, line_dup_chars) = find_duplicates(&lines);
-            let line_len = lines.len() as f64;
 
-            if let Some(threshold) = self.dup_line_frac {
-                let ratio = line_dup_elems as f64 / line_len;
-                if ratio > threshold {
-                    return Err(PipelineError::DocumentFiltered {
-                        doc_id: document.id.clone(),
-                        // Ensure detailed reason
-                        reason: format!("dup_line_frac (ratio {:.2}, max {:.2})", ratio, threshold),
-                    });
-                }
+        let (line_dup_elems, line_dup_chars) = find_duplicates(&lines);
+        // lines.len() will be >= 1 if trimmed_text is not empty. Use .max(1) as a safeguard.
+        let line_len = lines.len().max(1) as f64;
+
+        let ratio_line_dup_elems = line_dup_elems as f64 / line_len;
+        document.metadata.insert(
+            "gopher_dup_line_elems_ratio".to_string(),
+            format!("{:.4}", ratio_line_dup_elems),
+        );
+        if let Some(threshold) = self.dup_line_frac {
+            if ratio_line_dup_elems > threshold {
+                filter_reasons.push(format!(
+                    "dup_line_frac (ratio {:.2}, max {:.2})",
+                    ratio_line_dup_elems, threshold
+                ));
             }
-            if let Some(threshold) = self.dup_line_char_frac {
-                let ratio = line_dup_chars as f64 / text_char_len as f64;
-                if ratio > threshold {
-                    return Err(PipelineError::DocumentFiltered {
-                        doc_id: document.id.clone(),
-                        // Ensure detailed reason
-                        reason: format!(
-                            "dup_line_char_frac (ratio {:.2}, max {:.2})",
-                            ratio, threshold
-                        ),
-                    });
-                }
+        }
+
+        let ratio_line_dup_chars = line_dup_chars as f64 / text_char_len;
+        document.metadata.insert(
+            "gopher_dup_line_chars_ratio".to_string(),
+            format!("{:.4}", ratio_line_dup_chars),
+        );
+        if let Some(threshold) = self.dup_line_char_frac {
+            if ratio_line_dup_chars > threshold {
+                filter_reasons.push(format!(
+                    "dup_line_char_frac (ratio {:.2}, max {:.2})",
+                    ratio_line_dup_chars, threshold
+                ));
             }
         }
 
         // Word-based n-grams
         let words = split_into_words(trimmed_text);
-        if !words.is_empty() {
-            for &(n, frac_threshold) in &self.top_n_grams {
-                if n == 0 {
-                    continue;
-                }
-                let n_grams = get_n_grams(&words, n);
-                if !n_grams.is_empty() {
-                    let top_len_contribution = find_top_duplicate(&n_grams);
-                    let ratio = top_len_contribution as f64 / text_char_len as f64;
-                    if ratio > frac_threshold {
-                        return Err(PipelineError::DocumentFiltered {
-                            doc_id: document.id.clone(),
-                            // Ensure detailed reason
-                            reason: format!(
-                                "top_{}_gram (ratio {:.2}, max {:.2})",
-                                n, ratio, frac_threshold
-                            ),
-                        });
-                    }
-                }
-            }
-            for &(n, frac_threshold) in &self.dup_n_grams {
-                if n == 0 {
-                    continue;
-                }
-                let dup_n_gram_chars = find_all_duplicate(&words, n);
-                let ratio = dup_n_gram_chars as f64 / text_char_len as f64;
-                if ratio > frac_threshold {
-                    return Err(PipelineError::DocumentFiltered {
-                        doc_id: document.id.clone(),
-                        // Ensure detailed reason
-                        reason: format!(
-                            "duplicated_{}_n_grams (ratio {:.2}, max {:.2})",
-                            n, ratio, frac_threshold
-                        ),
-                    });
-                }
+        // Helper functions (get_n_grams, find_top_duplicate, find_all_duplicate)
+        // handle empty `words` or `n=0` correctly, typically resulting in 0.0 ratios.
+
+        for &(n, frac_threshold) in &self.top_n_grams {
+            let n_grams = get_n_grams(&words, n);
+            let top_len_contribution = find_top_duplicate(&n_grams);
+            let ratio_top_n_gram_chars = top_len_contribution as f64 / text_char_len;
+
+            document.metadata.insert(
+                format!("gopher_top_{}_gram_char_ratio", n),
+                format!("{:.4}", ratio_top_n_gram_chars),
+            );
+            // Only apply filter if n > 0, as n=0 calculations result in 0 and thresholds are not meaningful.
+            if n > 0 && ratio_top_n_gram_chars > frac_threshold {
+                filter_reasons.push(format!(
+                    "top_{}_gram (ratio {:.2}, max {:.2})",
+                    n, ratio_top_n_gram_chars, frac_threshold
+                ));
             }
         }
+
+        for &(n, frac_threshold) in &self.dup_n_grams {
+            let dup_n_gram_chars = find_all_duplicate(&words, n);
+            let ratio_all_dup_n_gram_chars = dup_n_gram_chars as f64 / text_char_len;
+
+            document.metadata.insert(
+                format!("gopher_all_dup_{}_gram_char_ratio", n),
+                format!("{:.4}", ratio_all_dup_n_gram_chars),
+            );
+            // Only apply filter if n > 0.
+            if n > 0 && ratio_all_dup_n_gram_chars > frac_threshold {
+                filter_reasons.push(format!(
+                    "duplicated_{}_n_grams (ratio {:.2}, max {:.2})",
+                    n, ratio_all_dup_n_gram_chars, frac_threshold
+                ));
+            }
+        }
+
+        if !filter_reasons.is_empty() {
+            document.metadata.insert(
+                "gopher_repetition_filter_status".to_string(),
+                "filtered".to_string(),
+            );
+            let reasons_string = filter_reasons.join("; ");
+            document.metadata.insert(
+                "gopher_repetition_filter_reasons".to_string(),
+                reasons_string.clone(),
+            );
+
+            return Err(PipelineError::DocumentFiltered {
+                doc_id: document.id.clone(),
+                reason: reasons_string,
+            });
+        }
+
+        document.metadata.insert(
+            "gopher_repetition_filter_status".to_string(),
+            "passed".to_string(),
+        );
         Ok(document)
     }
 }

@@ -67,203 +67,255 @@ impl ProcessingStep for GopherQualityFilter {
     }
 
     async fn process(&self, document: TextDocument) -> Result<TextDocument> {
+        let mut document = document; // Make document mutable
         let text = &document.content;
-        let words = split_into_words(text);
-        let n_total_words = words.len(); // Total words including those made of only symbols
 
-        // Filter out pure-symbol tokens to get non_symbol_words
-        // These are words that contain at least one non-punctuation character.
+        let words = split_into_words(text);
+        let n_total_words = words.len();
+        document.metadata.insert(
+            "gopher_quality_metric_total_word_count".to_string(),
+            n_total_words.to_string(),
+        );
+
         let non_symbol_words: Vec<&str> = words
             .iter()
             .filter(|w_ref_ref| w_ref_ref.chars().any(|c| !PUNCTUATION.contains(&c)))
-            .copied() // Equivalent to .map(|w_ref_ref| *w_ref_ref)
+            .copied()
             .collect();
         let n_non_symbol_words = non_symbol_words.len();
+        document.metadata.insert(
+            "gopher_quality_metric_non_symbol_word_count".to_string(),
+            n_non_symbol_words.to_string(),
+        );
+
+        let avg_word_len_non_symbol = if n_non_symbol_words > 0 {
+            let sum_len: usize = non_symbol_words.iter().map(|w| w.chars().count()).sum();
+            sum_len as f64 / n_non_symbol_words as f64
+        } else {
+            0.0
+        };
+        document.metadata.insert(
+            "gopher_quality_metric_avg_word_len_char_non_symbol".to_string(),
+            format!("{:.4}", avg_word_len_non_symbol),
+        );
+
+        let n_total_words_calc = n_total_words.max(1) as f64; // Denominator for ratios
+
+        let hash_char_count = text.chars().filter(|&c| c == '#').count();
+        let hash_char_ratio_vs_total_words = hash_char_count as f64 / n_total_words_calc;
+        document.metadata.insert(
+            "gopher_quality_metric_hash_char_count".to_string(),
+            hash_char_count.to_string(),
+        );
+        document.metadata.insert(
+            "gopher_quality_metric_hash_char_ratio_vs_total_words".to_string(),
+            format!("{:.4}", hash_char_ratio_vs_total_words),
+        );
+
+        let ellipsis_unit_count = text.matches("...").count() + text.matches("…").count();
+        let ellipsis_unit_ratio_vs_total_words = ellipsis_unit_count as f64 / n_total_words_calc;
+        document.metadata.insert(
+            "gopher_quality_metric_ellipsis_unit_count".to_string(),
+            ellipsis_unit_count.to_string(),
+        );
+        document.metadata.insert(
+            "gopher_quality_metric_ellipsis_unit_ratio_vs_total_words".to_string(),
+            format!("{:.4}", ellipsis_unit_ratio_vs_total_words),
+        );
+
+        let lines: Vec<&str> = text.lines().collect();
+        let n_lines_val = lines.len();
+        let n_lines_calc = n_lines_val.max(1) as f64; // Denominator for line ratios
+        document.metadata.insert(
+            "gopher_quality_metric_total_line_count".to_string(),
+            n_lines_val.to_string(),
+        );
+
+        let bullet_line_count = lines
+            .iter()
+            .filter(|&&l| {
+                let ls = l.trim_start();
+                ls.starts_with('•') || ls.starts_with('-') || ls.starts_with('*')
+                // Common bullet chars
+            })
+            .count();
+        let bullet_line_ratio = bullet_line_count as f64 / n_lines_calc;
+        document.metadata.insert(
+            "gopher_quality_metric_bullet_line_count".to_string(),
+            bullet_line_count.to_string(),
+        );
+        document.metadata.insert(
+            "gopher_quality_metric_bullet_line_ratio".to_string(),
+            format!("{:.4}", bullet_line_ratio),
+        );
+
+        let ellipsis_line_count = lines
+            .iter()
+            .filter(|&&l| {
+                let le = l.trim_end();
+                le.ends_with("...") || le.ends_with("…")
+            })
+            .count();
+        let ellipsis_line_ratio = ellipsis_line_count as f64 / n_lines_calc;
+        document.metadata.insert(
+            "gopher_quality_metric_ellipsis_line_count".to_string(),
+            ellipsis_line_count.to_string(),
+        );
+        document.metadata.insert(
+            "gopher_quality_metric_ellipsis_line_ratio".to_string(),
+            format!("{:.4}", ellipsis_line_ratio),
+        );
+
+        let alphabetic_word_count = words
+            .iter()
+            .filter(|w| w.chars().any(|c| c.is_alphabetic()))
+            .count();
+        let alphabetic_word_ratio_vs_total_words =
+            alphabetic_word_count as f64 / n_total_words_calc;
+        document.metadata.insert(
+            "gopher_quality_metric_alphabetic_word_count".to_string(),
+            alphabetic_word_count.to_string(),
+        );
+        document.metadata.insert(
+            "gopher_quality_metric_alphabetic_word_ratio_vs_total_words".to_string(),
+            format!("{:.4}", alphabetic_word_ratio_vs_total_words),
+        );
+
+        let stop_word_count = words
+            .iter()
+            .filter(|w| self.stop_words.contains(w.to_lowercase().as_str()))
+            .count();
+        document.metadata.insert(
+            "gopher_quality_metric_stop_word_count".to_string(),
+            stop_word_count.to_string(),
+        );
+
+        let mut filter_reasons: Vec<String> = Vec::new();
+
+        // --- Apply Filters ---
 
         // Word count bounds (based on non-symbol words)
         if let Some(min) = self.min_doc_words {
             if n_non_symbol_words < min {
-                return Err(PipelineError::DocumentFiltered {
-                    doc_id: document.id.clone(),
-                    reason: format!(
-                        "gopher_short_doc ({} non-symbol words, required {})",
-                        n_non_symbol_words, min
-                    ),
-                });
+                filter_reasons.push(format!(
+                    "gopher_short_doc ({} non-symbol words, required {})",
+                    n_non_symbol_words, min
+                ));
             }
         }
         if let Some(max) = self.max_doc_words {
             if n_non_symbol_words > max {
-                return Err(PipelineError::DocumentFiltered {
-                    doc_id: document.id.clone(),
-                    reason: format!(
-                        "gopher_long_doc ({} non-symbol words, max {})",
-                        n_non_symbol_words, max
-                    ),
-                });
+                filter_reasons.push(format!(
+                    "gopher_long_doc ({} non-symbol words, max {})",
+                    n_non_symbol_words, max
+                ));
             }
         }
 
         // Average word length (based on non-symbol words)
-        if !non_symbol_words.is_empty() {
-            let sum_len: usize = non_symbol_words.iter().map(|w| w.chars().count()).sum(); // Use chars().count() for length
-            let avg_len = sum_len as f64 / n_non_symbol_words as f64; // n_non_symbol_words is > 0 here
-            if let Some(min_avg) = self.min_avg_word_length {
-                if avg_len < min_avg {
-                    return Err(PipelineError::DocumentFiltered {
-                        doc_id: document.id.clone(),
-                        reason: format!(
-                            "gopher_below_avg_threshold (avg len {:.2}, required {:.2})",
-                            avg_len, min_avg
-                        ),
-                    });
-                }
+        if let Some(min_avg) = self.min_avg_word_length {
+            if avg_word_len_non_symbol < min_avg {
+                filter_reasons.push(format!(
+                    "gopher_below_avg_threshold (avg len {:.2}, required {:.2}{})",
+                    avg_word_len_non_symbol,
+                    min_avg,
+                    if n_non_symbol_words == 0 && min_avg > 0.0 {
+                        " - 0 non-symbol words"
+                    } else {
+                        ""
+                    }
+                ));
             }
-            if let Some(max_avg) = self.max_avg_word_length {
-                if avg_len > max_avg {
-                    return Err(PipelineError::DocumentFiltered {
-                        doc_id: document.id.clone(),
-                        reason: format!(
-                            "gopher_above_avg_threshold (avg len {:.2}, max {:.2})",
-                            avg_len, max_avg
-                        ),
-                    });
-                }
+        }
+        if let Some(max_avg) = self.max_avg_word_length {
+            // This check is only meaningful if there are words.
+            // If n_non_symbol_words is 0, avg_word_len_non_symbol is 0.0, which won't exceed max_avg unless max_avg is negative.
+            if n_non_symbol_words > 0 && avg_word_len_non_symbol > max_avg {
+                filter_reasons.push(format!(
+                    "gopher_above_avg_threshold (avg len {:.2}, max {:.2})",
+                    avg_word_len_non_symbol, max_avg
+                ));
             }
-        } else if self.min_avg_word_length.is_some() && self.min_avg_word_length.unwrap() > 0.0 {
-            // If there are no non-symbol words, but a min_avg_word_length > 0 is required, it should fail.
-            // (Unless min_doc_words already caught it, if min_doc_words >= 1)
-            return Err(PipelineError::DocumentFiltered {
-                doc_id: document.id.clone(),
-                reason: format!(
-                    "gopher_below_avg_threshold (0 non-symbol words, required avg len > 0)"
-                ),
-            });
         }
 
-        // Symbol-to-word ratios (based on total words, including symbol-only words)
-        // n_total_words_calc is n_total_words, avoiding div by zero if text is empty.
-        let n_total_words_calc = n_total_words.max(1);
+        // Symbol-to-word ratios
         if let Some(max_sym_ratio) = self.max_symbol_word_ratio {
-            let hash_count = text.chars().filter(|&c| c == '#').count();
-            let hash_ratio = hash_count as f64 / n_total_words_calc as f64;
-            if hash_ratio > max_sym_ratio {
-                return Err(PipelineError::DocumentFiltered {
-                    doc_id: document.id.clone(),
-                    reason: format!(
-                        "gopher_too_many_hashes (ratio {:.2}, max {:.2})",
-                        hash_ratio, max_sym_ratio
-                    ),
-                });
+            if hash_char_ratio_vs_total_words > max_sym_ratio {
+                filter_reasons.push(format!(
+                    "gopher_too_many_hashes (ratio {:.2}, max {:.2})",
+                    hash_char_ratio_vs_total_words, max_sym_ratio
+                ));
             }
-
-            let ellipsis_char_count = text.matches("...").count() + text.matches("…").count();
-            // Gopher's definition might be about "words" that are ellipses, not char sequences.
-            // For now, this counts occurrences. The original paper should be checked.
-            // Let's assume this counts occurrences of "..." or "…" as "ellipsis units".
-            let ellipsis_ratio = ellipsis_char_count as f64 / n_total_words_calc as f64;
-            if ellipsis_ratio > max_sym_ratio {
-                // Re-uses max_symbol_word_ratio as per the prompt's structure
-                return Err(PipelineError::DocumentFiltered {
-                    doc_id: document.id.clone(),
-                    reason: format!(
-                        "gopher_too_many_ellipsis (ratio {:.2}, max {:.2})",
-                        ellipsis_ratio, max_sym_ratio
-                    ),
-                });
+            // Gopher re-uses max_symbol_word_ratio for ellipsis
+            if ellipsis_unit_ratio_vs_total_words > max_sym_ratio {
+                filter_reasons.push(format!(
+                    "gopher_too_many_ellipsis_units (ratio {:.2}, max {:.2})",
+                    ellipsis_unit_ratio_vs_total_words, max_sym_ratio
+                ));
             }
         }
 
         // Line-based bullet/ellipsis ratios
-        let lines: Vec<&str> = text.lines().collect();
-        let n_lines = lines.len().max(1); // avoid div by zero
         if let Some(max_bul_ratio) = self.max_bullet_lines_ratio {
-            let bullet_lines = lines
-                .iter()
-                .filter(|&&l| {
-                    let ls = l.trim_start();
-                    ls.starts_with('•') || ls.starts_with('-') // Gopher used '*' or '-', commonmark uses '•', '-', '*'
-                })
-                .count();
-            let current_bullet_ratio = bullet_lines as f64 / n_lines as f64;
-            if current_bullet_ratio > max_bul_ratio {
-                return Err(PipelineError::DocumentFiltered {
-                    doc_id: document.id.clone(),
-                    reason: format!(
-                        "gopher_too_many_bullets (ratio {:.2}, max {:.2})",
-                        current_bullet_ratio, max_bul_ratio
-                    ),
-                });
+            if bullet_line_ratio > max_bul_ratio {
+                filter_reasons.push(format!(
+                    "gopher_too_many_bullets (ratio {:.2}, max {:.2})",
+                    bullet_line_ratio, max_bul_ratio
+                ));
             }
         }
         if let Some(max_ell_lines_ratio) = self.max_ellipsis_lines_ratio {
-            let ell_lines = lines
-                .iter()
-                .filter(|&&l| {
-                    let le = l.trim_end();
-                    le.ends_with("...") || le.ends_with("…")
-                })
-                .count();
-            let current_ell_lines_ratio = ell_lines as f64 / n_lines as f64;
-            if current_ell_lines_ratio > max_ell_lines_ratio {
-                return Err(PipelineError::DocumentFiltered {
-                    doc_id: document.id.clone(),
-                    reason: format!(
-                        "gopher_too_many_end_ellipsis (ratio {:.2}, max {:.2})",
-                        current_ell_lines_ratio, max_ell_lines_ratio
-                    ),
-                });
+            if ellipsis_line_ratio > max_ell_lines_ratio {
+                filter_reasons.push(format!(
+                    "gopher_too_many_end_ellipsis_lines (ratio {:.2}, max {:.2})",
+                    ellipsis_line_ratio, max_ell_lines_ratio
+                ));
             }
         }
 
         // Alphabetic-word ratio
         if let Some(max_non_alpha_ratio) = self.max_non_alpha_words_ratio {
-            // Filter if the ratio of alphabetic words is too low.
-            // An alphabetic word is one that contains at least one alphabetic character.
-            let alpha_word_count = words // use `words` (includes symbol-only words, as per original Gopher logic)
-                .iter()
-                .filter(|w| w.chars().any(|c| c.is_alphabetic()))
-                .count();
-
-            // Ratio of alphabetic words to total words
-            let alpha_word_ratio = alpha_word_count as f64 / n_total_words_calc as f64;
-
-            // If max_non_alpha_ratio = 0.8, it means non-alphabetic words can be at most 80%.
-            // This implies alphabetic words must be at least 20% (1.0 - 0.8).
-            // So, fail if alpha_word_ratio < (1.0 - max_non_alpha_ratio)
-            if alpha_word_ratio < (1.0 - max_non_alpha_ratio) {
-                return Err(PipelineError::DocumentFiltered {
-                    doc_id: document.id.clone(),
-                    reason: format!(
-                        "gopher_below_alpha_threshold (alpha ratio {:.2}, required min {:.2})",
-                        alpha_word_ratio,
-                        1.0 - max_non_alpha_ratio
-                    ),
-                });
+            let min_required_alpha_ratio = 1.0 - max_non_alpha_ratio;
+            if alphabetic_word_ratio_vs_total_words < min_required_alpha_ratio {
+                filter_reasons.push(format!(
+                    "gopher_below_alpha_threshold (alpha ratio {:.2}, required min {:.2})",
+                    alphabetic_word_ratio_vs_total_words, min_required_alpha_ratio
+                ));
             }
         }
 
         // Stop-word presence
         if let Some(min_sw) = self.min_stop_words {
-            if min_sw > 0 {
-                // Only check if a non-zero minimum is required
-                let sw_count = words // use `words` (includes symbol-only words)
-                    .iter()
-                    .filter(|w| self.stop_words.contains(w.to_lowercase().as_str())) // lowercase before check
-                    .count();
-                if sw_count < min_sw {
-                    return Err(PipelineError::DocumentFiltered {
-                        doc_id: document.id.clone(),
-                        reason: format!(
-                            "gopher_enough_stop_words (found {}, required {})",
-                            sw_count, min_sw
-                        ), // "enough" is confusing, should be "too_few_stop_words"
-                    });
-                }
+            if min_sw > 0 && stop_word_count < min_sw {
+                // Only filter if min_sw > 0
+                filter_reasons.push(format!(
+                    "gopher_too_few_stop_words (found {}, required {})", // Clarified reason
+                    stop_word_count, min_sw
+                ));
             }
         }
 
-        Ok(document)
+        if !filter_reasons.is_empty() {
+            let reasons_string = filter_reasons.join("; ");
+            document.metadata.insert(
+                "gopher_quality_filter_status".to_string(),
+                "filtered".to_string(),
+            );
+            document.metadata.insert(
+                "gopher_quality_filter_reasons".to_string(),
+                reasons_string.clone(),
+            );
+            Err(PipelineError::DocumentFiltered {
+                doc_id: document.id.clone(),
+                reason: reasons_string,
+            })
+        } else {
+            document.metadata.insert(
+                "gopher_quality_filter_status".to_string(),
+                "passed".to_string(),
+            );
+            Ok(document)
+        }
     }
 }
 
@@ -360,32 +412,37 @@ mod tests {
     // --- Average Word Length Tests (non-symbol words, char count) ---
     #[tokio::test]
     async fn test_avg_word_length() {
+        // Note: Original test_avg_word_length might have more cases
         let mut filter = create_permissive_filter();
         filter.min_avg_word_length = Some(3.0);
         filter.max_avg_word_length = Some(5.0);
 
         // Passes (avg len = (3+5+4)/3 = 12/3 = 4.0)
-        let doc_pass = create_gopher_test_doc("avg_len_pass", "cat words test ."); // "cat", "words", "test"
+        let doc_pass = create_gopher_test_doc("avg_len_pass", "cat words test .");
         assert!(filter.process(doc_pass).await.is_ok());
 
         // Fails min_avg_word_length (avg len = (1+2)/2 = 1.5)
-        let doc_fail_min = create_gopher_test_doc("avg_len_fail_min", "a it ."); // "a", "it"
+        let doc_fail_min = create_gopher_test_doc("avg_len_fail_min", "a it .");
         let result_fail_min = filter.process(doc_fail_min).await;
         assert!(result_fail_min.is_err());
         match result_fail_min.err().unwrap() {
             PipelineError::DocumentFiltered { reason, .. } => {
-                assert!(reason.contains("gopher_below_avg_threshold (avg len 1.50, required 3.00)"));
+                // For "a it .", non_symbol_words = ["a", "it"]. avg_len = 1.5.
+                assert!(
+                    reason.contains("gopher_below_avg_threshold (avg len 1.50, required 3.00)"),
+                    "Actual reason: {}",
+                    reason
+                );
             }
             _ => panic!("Expected DocumentFiltered error for low avg word length"),
         }
 
         // Fails max_avg_word_length (avg len for "testing", "another" is (7+7)/2 = 7.0)
-        let doc_fail_max = create_gopher_test_doc("avg_len_fail_max", "testing another ."); // "testing", "another"
+        let doc_fail_max = create_gopher_test_doc("avg_len_fail_max", "testing another .");
         let result_fail_max = filter.process(doc_fail_max).await;
         assert!(result_fail_max.is_err());
         match result_fail_max.err().unwrap() {
             PipelineError::DocumentFiltered { reason, .. } => {
-                // Corrected expected average length from 7.50 to 7.00
                 assert!(
                     reason.contains("gopher_above_avg_threshold (avg len 7.00, max 5.00)"),
                     "Actual reason: {}",
@@ -396,14 +453,17 @@ mod tests {
         }
 
         // Fails because no non-symbol words but min_avg_word_length > 0
+        // This is the specific case that was failing: src/pipeline/filters/gopher_quality.rs:456:17
         let doc_fail_no_words = create_gopher_test_doc("avg_len_fail_no_words", ". ! .");
         let result_fail_no_words = filter.process(doc_fail_no_words).await;
         assert!(result_fail_no_words.is_err());
         match result_fail_no_words.err().unwrap() {
             PipelineError::DocumentFiltered { reason, .. } => {
-                assert!(reason.contains(
-                    "gopher_below_avg_threshold (0 non-symbol words, required avg len > 0)"
-                ));
+                // Updated assertion to match the new detailed reason string
+                assert!(
+                    reason.contains("gopher_below_avg_threshold (avg len 0.00, required 3.00 - 0 non-symbol words)"),
+                    "Actual reason: {}", reason
+                );
             }
             _ => {
                 panic!("Expected DocumentFiltered error for no words with min_avg_word_length > 0")
@@ -479,8 +539,6 @@ mod tests {
 
         // Passes: 1 ellipsis. `split_into_words` yields 10 words. Ratio 1/10 = 0.1. (0.1 > 0.1) is false.
         let doc_pass_content = "word1 word2 ... word3 word4 word5 word6 word7 word8 word9 word10";
-        // words: ["word1", ..., "word10"] (10 words, "..." is not a word here by split_into_words)
-        // ellipsis_char_count = 1. ellipsis_ratio = 1/10 = 0.1.
         let doc_pass = create_gopher_test_doc("ellipsis_pass", doc_pass_content);
         let result_pass = filter.process(doc_pass.clone()).await;
         assert!(
@@ -491,21 +549,21 @@ mod tests {
         );
 
         // Fails: 2 ellipses. `split_into_words` yields 8 words. Ratio 2/8 = 0.25. (0.25 > 0.1) is true.
+        // This is the failing test: src/pipeline/filters/gopher_quality.rs:554:17
         let doc_fail_content = "word1 ... word2 … word3 word4 word5 word6 word7 word8";
-        // words: ["word1", ..., "word8"] (8 words)
-        // ellipsis_char_count = 2. ellipsis_ratio = 2/8 = 0.25.
         let doc_fail = create_gopher_test_doc("ellipsis_fail", doc_fail_content);
         let result_fail = filter.process(doc_fail).await;
         assert!(result_fail.is_err());
         match result_fail.err().unwrap() {
             PipelineError::DocumentFiltered { reason, .. } => {
+                // Updated assertion
                 assert!(
-                    reason.contains("gopher_too_many_ellipsis (ratio 0.25, max 0.10)"),
+                    reason.contains("gopher_too_many_ellipsis_units (ratio 0.25, max 0.10)"),
                     "Actual reason: {}",
                     reason
                 );
             }
-            _ => panic!("Expected DocumentFiltered for too many ellipsis"),
+            _ => panic!("Expected DocumentFiltered for too many ellipsis units"),
         }
     }
 
@@ -567,14 +625,16 @@ mod tests {
         assert!(filter.process(doc_pass).await.is_ok());
 
         // Fails: 3 ellipsis lines / 4 total lines = 0.75
+        // This is the failing test: src/pipeline/filters/gopher_quality.rs:628:17
         let doc_fail_content = "Line one...\nLine two…\nLine three...\nNormal line";
         let doc_fail = create_gopher_test_doc("ell_lines_fail", doc_fail_content);
         let result_fail = filter.process(doc_fail).await;
         assert!(result_fail.is_err());
         match result_fail.err().unwrap() {
             PipelineError::DocumentFiltered { reason, .. } => {
+                // Updated assertion
                 assert!(
-                    reason.contains("gopher_too_many_end_ellipsis (ratio 0.75, max 0.50)"),
+                    reason.contains("gopher_too_many_end_ellipsis_lines (ratio 0.75, max 0.50)"),
                     "Actual reason: {}",
                     reason
                 );
@@ -696,26 +756,27 @@ mod tests {
     }
 
     // --- Stop Word Presence Test ---
+    // --- Stop Word Presence Test ---
     #[tokio::test]
     async fn test_stop_word_presence() {
+        // Replaces test_stop_word_presence_clarified_reason
         let mut filter_default_sw = create_permissive_filter();
         filter_default_sw.min_stop_words = Some(2); // Requires at least 2 stop words from default list
 
-        // Default stop words: "the", "be", "to", "of", "and", "that", "have", "with"
-        // Passes: "the", "and" (2 stop words)
         let doc_pass_default =
             create_gopher_test_doc("sw_pass_default", "the quick brown fox and the lazy dog");
         assert!(filter_default_sw.process(doc_pass_default).await.is_ok());
 
-        // Fails: "a", "is" (0 default stop words, "is" is not in default list, "a" is not)
+        // This is the failing test: src/pipeline/filters/gopher_quality.rs:769:17
         let doc_fail_default =
             create_gopher_test_doc("sw_fail_default", "a quick brown fox is lazy");
         let result_fail_default = filter_default_sw.process(doc_fail_default).await;
         assert!(result_fail_default.is_err());
         match result_fail_default.err().unwrap() {
             PipelineError::DocumentFiltered { reason, .. } => {
+                // Updated assertion
                 assert!(
-                    reason.contains("gopher_enough_stop_words (found 0, required 2)"),
+                    reason.contains("gopher_too_few_stop_words (found 0, required 2)"),
                     "Actual reason: {}",
                     reason
                 );
@@ -738,20 +799,19 @@ mod tests {
             Some(custom_sw),
         );
 
-        // Passes: "custom" (1 custom stop word)
         let doc_pass_custom =
             create_gopher_test_doc("sw_pass_custom", "this is a custom test with other words");
         assert!(filter_custom_sw.process(doc_pass_custom).await.is_ok());
 
-        // Fails: No custom stop words
         let doc_fail_custom =
             create_gopher_test_doc("sw_fail_custom", "this is a regular sentence");
         let result_fail_custom = filter_custom_sw.process(doc_fail_custom).await;
         assert!(result_fail_custom.is_err());
         match result_fail_custom.err().unwrap() {
             PipelineError::DocumentFiltered { reason, .. } => {
+                // Updated assertion
                 assert!(
-                    reason.contains("gopher_enough_stop_words (found 0, required 1)"),
+                    reason.contains("gopher_too_few_stop_words (found 0, required 1)"),
                     "Actual reason: {}",
                     reason
                 );
@@ -759,7 +819,6 @@ mod tests {
             _ => panic!("Expected DocumentFiltered for too few custom stop words"),
         }
 
-        // Test min_stop_words = 0 or None (should always pass this check)
         let mut filter_no_sw_needed = create_permissive_filter();
         filter_no_sw_needed.min_stop_words = Some(0);
         let doc_no_sw = create_gopher_test_doc("sw_zero_needed", "no stop words here");
