@@ -3,6 +3,33 @@
 version = 4
 
 [[package]]
+name = "TextBlaster"
+version = "0.1.0"
+dependencies = [
+ "arrow",
+ "async-trait",
+ "chrono",
+ "clap",
+ "futures",
+ "icu",
+ "itertools",
+ "lapin",
+ "once_cell",
+ "parquet",
+ "rayon",
+ "regex",
+ "rnltk",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "tempfile",
+ "thiserror 2.0.12",
+ "tokio",
+ "tokio-executor-trait",
+ "tokio-reactor-trait",
+]
+
+[[package]]
 name = "addr2line"
 version = "0.24.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2750,33 +2777,6 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 1.0.69",
-]
-
-[[package]]
-name = "rust-data"
-version = "0.1.0"
-dependencies = [
- "arrow",
- "async-trait",
- "chrono",
- "clap",
- "futures",
- "icu",
- "itertools",
- "lapin",
- "once_cell",
- "parquet",
- "rayon",
- "regex",
- "rnltk",
- "serde",
- "serde_json",
- "serde_yaml",
- "tempfile",
- "thiserror 2.0.12",
- "tokio",
- "tokio-executor-trait",
- "tokio-reactor-trait",
 ]
 
 [[package]]

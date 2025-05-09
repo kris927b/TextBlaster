@@ -8,14 +8,14 @@ use lapin::{
     types::FieldTable,
     Connection, ConnectionProperties, Result as LapinResult,
 };
-use rust_data::config::ParquetInputConfig;
-use rust_data::data_model::{ProcessingOutcome, TextDocument}; // Import both TextDocument and ProcessingOutcome
-use rust_data::error::{PipelineError, Result}; // Use the library's Result type
-use rust_data::pipeline::readers::ParquetReader;
-use rust_data::pipeline::writers::parquet_writer::ParquetWriter;
 use serde_json;
 use std::time::Duration;
-use tokio::time::sleep; // For retry delay
+use tokio::time::sleep;
+use TextBlaster::config::ParquetInputConfig;
+use TextBlaster::data_model::{ProcessingOutcome, TextDocument}; // Import both TextDocument and ProcessingOutcome
+use TextBlaster::error::{PipelineError, Result}; // Use the library's Result type
+use TextBlaster::pipeline::readers::ParquetReader;
+use TextBlaster::pipeline::writers::parquet_writer::ParquetWriter; // For retry delay
 
 const PARQUET_WRITE_BATCH_SIZE: usize = 500; // Configurable batch size for writing
 

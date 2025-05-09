@@ -3,10 +3,10 @@
 use clap::Parser;
 use futures::StreamExt; // For processing the consumer stream
                         // {{ Use the new load_pipeline_config function }}
-use rust_data::config::{load_pipeline_config, PipelineConfig, StepConfig}; // Added config imports and load_pipeline_config
-use rust_data::data_model::{ProcessingOutcome, TextDocument}; // Updated import
-use rust_data::error::{PipelineError, Result}; // Use the library's Result type
-use rust_data::executor::{PipelineExecutor, ProcessingStep};
+use TextBlaster::config::{load_pipeline_config, PipelineConfig, StepConfig}; // Added config imports and load_pipeline_config
+use TextBlaster::data_model::{ProcessingOutcome, TextDocument}; // Updated import
+use TextBlaster::error::{PipelineError, Result}; // Use the library's Result type
+use TextBlaster::executor::{PipelineExecutor, ProcessingStep};
 // Import necessary filters (adjust if steps change)
 // {{ Remove ArrowNativeType import if no longer needed directly here }}
 // use arrow::datatypes::ArrowNativeType;
@@ -24,7 +24,9 @@ use lapin::{
     ConnectionProperties,
     Result as LapinResult,
 };
-use rust_data::pipeline::filters::{C4QualityFilter, GopherQualityFilter, GopherRepetitionFilter};
+use TextBlaster::pipeline::filters::{
+    C4QualityFilter, GopherQualityFilter, GopherRepetitionFilter,
+};
 // If GopherQualityFilter uses it
 use serde_json;
 use std::path::PathBuf;

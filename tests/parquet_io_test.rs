@@ -1,14 +1,12 @@
-// /Users/kristianjensen/Documents/rust-data/tests/parquet_io_test.rs
-
 use std::collections::HashMap;
 use tempfile::NamedTempFile;
 
 // Import necessary items from your crate
-use rust_data::config::ParquetInputConfig; // Assuming this is public and in src/config.rs
-use rust_data::data_model::TextDocument;
-use rust_data::error::Result;
-use rust_data::pipeline::readers::parquet_reader::ParquetReader;
-use rust_data::pipeline::writers::parquet_writer::ParquetWriter; // Assuming a top-level Result or specific error type from src/error.rs
+use TextBlaster::config::ParquetInputConfig; // Assuming this is public and in src/config.rs
+use TextBlaster::data_model::TextDocument;
+use TextBlaster::error::Result;
+use TextBlaster::pipeline::readers::parquet_reader::ParquetReader;
+use TextBlaster::pipeline::writers::parquet_writer::ParquetWriter; // Assuming a top-level Result or specific error type from src/error.rs
 
 // Helper function to create TextDocuments easily for tests
 fn create_sample_doc(
@@ -126,12 +124,15 @@ fn test_parquet_read_write_roundtrip() -> Result<()> {
             original.id
         );
 
-        
         // {{ Updated metadata assertion }}
         // Now that ParquetReader attempts to read metadata, compare it with the original.
         // Note: If original metadata was None (passed to create_sample_doc), it becomes an empty HashMap.
         // The reader will also produce an empty HashMap if metadata column is missing, null, or JSON is empty/invalid.
-        assert_eq!(original.metadata, read.metadata, "Document metadata should match for ID: {}", original.id);
+        assert_eq!(
+            original.metadata, read.metadata,
+            "Document metadata should match for ID: {}",
+            original.id
+        );
     }
 
     Ok(())
