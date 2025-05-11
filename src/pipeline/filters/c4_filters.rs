@@ -223,7 +223,7 @@ impl ProcessingStep for C4QualityFilter {
                 .metadata
                 .insert("c4_filter_reasons".to_string(), reasons_string.clone());
             Err(PipelineError::DocumentFiltered {
-                doc_id: document.id.clone(),
+                document: document,
                 reason: reasons_string,
             })
         } else {
@@ -369,7 +369,11 @@ mod tests {
         let doc = create_test_doc("empty_content_meta", "");
         let result = filter.process(doc).await;
         assert!(result.is_err());
-        if let Err(PipelineError::DocumentFiltered { reason, doc_id: _ }) = result {
+        if let Err(PipelineError::DocumentFiltered {
+            document: _,
+            reason,
+        }) = result
+        {
             assert!(reason.contains("Too few sentences (found 0, required 1)"));
             // At this point, the `document` that was processed and had metadata added is consumed by `Err`.
             // To check its metadata, the test or `PipelineError` would need to provide access to it.

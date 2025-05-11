@@ -1,5 +1,6 @@
 // Example using thiserror
-use thiserror::Error;
+use crate::data_model::TextDocument;
+use thiserror::Error; // {{Add import for TextDocument}}
 
 /// Custom Result type for this crate.
 pub type Result<T> = std::result::Result<T, PipelineError>;
@@ -28,8 +29,12 @@ pub enum PipelineError {
         source: arrow::error::ArrowError,
     },
 
-    #[error("Document {doc_id} filtered out: {reason}")]
-    DocumentFiltered { doc_id: String, reason: String },
+    // {{MODIFIED: Changed 'doc_id: String' to 'document: TextDocument' and updated message}}
+    #[error("Document '{document_id}' filtered out: {reason}", document_id = document.id)]
+    DocumentFiltered {
+        document: TextDocument,
+        reason: String,
+    },
 
     #[error("Error in processing step '{step_name}': {source}")]
     StepError {

@@ -315,7 +315,7 @@ impl ProcessingStep for GopherRepetitionFilter {
             );
 
             return Err(PipelineError::DocumentFiltered {
-                doc_id: document.id.clone(),
+                document: document,
                 reason: reasons_string,
             });
         }

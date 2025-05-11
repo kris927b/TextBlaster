@@ -50,6 +50,10 @@ struct Args {
     /// Path to the output Parquet file
     #[arg(short = 'o', long, default_value = "output_processed.parquet")]
     output_file: String,
+
+    /// Path to the excluded output Parquet file
+    #[arg(short = 'e', long, default_value = "excluded.parquet")]
+    excluded_file: String,
 }
 
 // Helper function to connect to RabbitMQ with retry
@@ -218,11 +222,15 @@ async fn main() -> Result<()> {
     if let Some(parent_dir) = std::path::Path::new(&args.output_file).parent() {
         tokio::fs::create_dir_all(parent_dir).await?; // Create parent dirs if needed
     }
-    let mut parquet_writer = ParquetWriter::new(&args.output_file)?;
+    let mut parquet_writer_output = ParquetWriter::new(&args.output_file)?;
     println!("Initialized Parquet writer for: {}", args.output_file);
+
+    let mut parquet_writer_excluded = ParquetWriter::new(&args.excluded_file)?;
+    println!("Initialized Parquet writer for: {}", args.excluded_file);
 
     // 7. Start Consuming Outcomes
     let mut results_batch: Vec<TextDocument> = Vec::with_capacity(PARQUET_WRITE_BATCH_SIZE);
+    let mut excluded_batch: Vec<TextDocument> = Vec::with_capacity(PARQUET_WRITE_BATCH_SIZE);
     let mut outcomes_received_count = 0u64; // Count total outcomes (Success + Filtered)
     let mut success_count = 0u64; // Count only successful documents
     let mut filtered_count = 0u64; // Count filtered documents
@@ -271,7 +279,7 @@ async fn main() -> Result<()> {
                                 results_batch.push(doc);
                                 // Write batch if full
                                 if results_batch.len() >= PARQUET_WRITE_BATCH_SIZE {
-                                    match parquet_writer.write_batch(&results_batch) {
+                                    match parquet_writer_output.write_batch(&results_batch) {
                                         Ok(_) => {
                                             println!(
                                                 "Written Parquet batch ({} docs). Total outcomes: {}/{}, Success: {}, Filtered: {}",
@@ -289,13 +297,31 @@ async fn main() -> Result<()> {
                                     }
                                 }
                             }
-                            ProcessingOutcome::Filtered { id, reason } => {
+                            ProcessingOutcome::Filtered {
+                                document,
+                                reason: _,
+                            } => {
                                 filtered_count += 1;
-                                // Log filtered document, don't add to batch
-                                println!(
-                                    "Outcome: Filtered ID: {} (Reason: {}). Progress: {}/{}, Success: {}, Filtered: {}",
-                                    id, reason, outcomes_received_count, published_count, success_count, filtered_count
-                                );
+                                excluded_batch.push(document);
+                                // Write batch if full
+                                if excluded_batch.len() >= PARQUET_WRITE_BATCH_SIZE {
+                                    match parquet_writer_excluded.write_batch(&excluded_batch) {
+                                        Ok(_) => {
+                                            println!(
+                                                "Written Filtered Parquet batch ({} docs). Total outcomes: {}/{}, Success: {}, Filtered: {}",
+                                                excluded_batch.len(), outcomes_received_count, published_count, success_count, filtered_count
+                                            );
+                                            excluded_batch.clear(); // Clear batch after successful write
+                                        }
+                                        Err(e) => {
+                                            // This is a critical error during writing
+                                            eprintln!("FATAL: Failed to write Parquet batch: {}. Stopping.", e);
+                                            // Ack the current message first before stopping
+                                            let _ = delivery.ack(BasicAckOptions::default()).await;
+                                            break; // Stop processing further outcomes
+                                        }
+                                    }
+                                }
                             } // Handle ProcessingOutcome::Error here if added later
                         }
                     }
@@ -343,7 +369,24 @@ async fn main() -> Result<()> {
             "Writing final batch of {} successfully processed documents...",
             results_batch.len()
         );
-        match parquet_writer.write_batch(&results_batch) {
+        match parquet_writer_output.write_batch(&results_batch) {
+            Ok(_) => {
+                println!("Final batch written successfully.");
+            }
+            Err(e) => {
+                eprintln!("ERROR: Failed to write final Parquet batch: {}", e);
+                // File might be incomplete/corrupted here
+            }
+        }
+    }
+
+    // 8. Write any remaining documents in the final batch
+    if !excluded_batch.is_empty() {
+        println!(
+            "Writing final batch of {} successfully processed documents...",
+            excluded_batch.len()
+        );
+        match parquet_writer_excluded.write_batch(&excluded_batch) {
             Ok(_) => {
                 println!("Final batch written successfully.");
             }
@@ -356,7 +399,13 @@ async fn main() -> Result<()> {
 
     // 9. Close the Parquet writer (essential!)
     println!("Closing Parquet writer...");
-    if let Err(e) = parquet_writer.close() {
+    if let Err(e) = parquet_writer_output.close() {
+        eprintln!("ERROR: Failed to close Parquet writer cleanly: {}", e);
+    } else {
+        println!("Parquet writer closed successfully.");
+    }
+
+    if let Err(e) = parquet_writer_excluded.close() {
         eprintln!("ERROR: Failed to close Parquet writer cleanly: {}", e);
     } else {
         println!("Parquet writer closed successfully.");

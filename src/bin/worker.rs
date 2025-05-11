@@ -268,15 +268,18 @@ async fn main() -> Result<()> {
                                         // Now, check the *source* of the StepError
                                         // We need to dereference the Box to match the inner error
                                         match *source {
-                                            PipelineError::DocumentFiltered { doc_id, reason } => {
+                                            PipelineError::DocumentFiltered {
+                                                document,
+                                                reason,
+                                            } => {
                                                 // Found the filtered error inside StepError!
                                                 println!(
                                                     "Document ID: {} was filtered by step '{}'. Reason: {}",
-                                                    doc_id, step_name, reason
+                                                    document.id, step_name, reason
                                                 );
                                                 // Set outcome to Filtered
                                                 outcome = Some(ProcessingOutcome::Filtered {
-                                                    id: doc_id,
+                                                    document,
                                                     reason,
                                                 });
                                             }
