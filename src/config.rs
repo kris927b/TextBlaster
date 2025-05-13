@@ -33,6 +33,18 @@ pub enum StepConfig {
     // Add other filter/step types here as needed
 }
 
+impl StepConfig {
+    /// Returns a string slice representing the name of the step type.
+    pub fn name(&self) -> &'static str {
+        match self {
+            StepConfig::C4QualityFilter(_) => "C4QualityFilter",
+            StepConfig::GopherRepetitionFilter(_) => "GopherRepetitionFilter",
+            StepConfig::GopherQualityFilter(_) => "GopherQualityFilter",
+            // Add cases for other StepConfig variants here
+        }
+    }
+}
+
 /// Parameters for the C4QualityFilter.
 #[derive(Deserialize, Debug, Clone)]
 pub struct C4QualityParams {

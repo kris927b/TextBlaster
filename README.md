@@ -126,6 +126,45 @@ Ensure your RabbitMQ server is running before starting the producer or workers.
 
 The producer will read the input, send tasks, wait for all corresponding results, write the output Parquet file, and then exit. Workers will continue running until stopped manually (e.g., with Ctrl+C).
 
+## Monitoring and Metrics
+
+Both the producer and worker binaries expose an optional Prometheus metrics HTTP endpoint. This allows you to monitor the application's performance and state using Prometheus and visualization tools like Grafana.
+
+To enable the metrics endpoint, use the `--metrics-port` command-line argument when starting the producer or worker:
+
+```bash
+# Run producer with metrics on port 8080
+./target/release/producer --input-file ... --metrics-port 8080
+
+# Run worker with metrics on port 8081
+./target/release/worker --metrics-port 8081
+```
+
+Replace `8080` and `8081` with your desired ports.
+
+Once enabled, you can access the metrics by sending an HTTP GET request to the `/metrics` path on the specified port (e.g., `http://localhost:8080/metrics` or `http://your_server_ip:8081/metrics`).
+
+The exposed metrics include (but are not limited to):
+
+**Producer Metrics:**
+*   `producer_tasks_published_total`: Total number of tasks successfully published to the queue.
+*   `producer_task_publish_errors_total`: Total errors during task publishing (serialization, broker issues).
+*   `producer_results_received_total`: Total number of outcomes received from the results queue.
+*   `producer_results_success_total`: Total number of successfully processed documents (from outcomes).
+*   `producer_results_filtered_total`: Total number of documents filtered by workers (from outcomes).
+*   `producer_result_deserialization_errors_total`: Total errors deserializing outcome messages.
+*   `producer_active_tasks_in_flight`: Number of tasks published but not yet resolved by workers.
+*   `producer_task_publishing_duration_seconds`: Histogram of task publishing latencies.
+
+**Worker Metrics:**
+*   `worker_tasks_processed_total`: Total number of tasks successfully processed by the worker pipeline.
+*   `worker_tasks_filtered_total`: Total number of tasks filtered out by the worker pipeline.
+*   `worker_tasks_failed_total`: Total number of tasks that resulted in a pipeline error.
+*   `worker_task_deserialization_errors_total`: Total errors deserializing incoming task messages.
+*   `worker_outcome_publish_errors_total`: Total errors publishing outcome messages back to the producer.
+*   `worker_task_processing_duration_seconds`: Histogram of task processing durations.
+*   `worker_active_processing_tasks`: Number of tasks currently being processed concurrently by the worker.
+
 ## Pipeline Structure
 
 The core processing logic resides in the pipeline executor (`src/executor.rs`) which runs a series of steps implementing the `ProcessingStep` trait. Each step takes a `TextDocument` and returns a `Result<TextDocument>`. If any step returns an `Err`, processing for that document stops. A specific `PipelineError::DocumentFiltered` error is used to indicate that a document was intentionally filtered out.

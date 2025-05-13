@@ -33,6 +33,8 @@ use std::path::PathBuf;
 use std::sync::Arc; // To share the executor across potential concurrent tasks
 use std::time::Duration;
 use tokio::time::sleep; // {{ Add serde_json for result serialization }}
+use tracing::{error, info, warn, debug, instrument, info_span}; // Added tracing
+use tracing_subscriber::{fmt, EnvFilter}; // Added tracing_subscriber
 
 // Define command-line arguments
 #[derive(Parser, Debug)]
@@ -60,7 +62,73 @@ struct Args {
     /// Path to the pipeline configuration YAML file.
     #[arg(short = 'c', long, default_value = "config/pipeline_config.yaml")]
     pipeline_config: PathBuf,
+
+    /// Optional: Port for the Prometheus metrics HTTP endpoint
+    #[arg(long)]
+    metrics_port: Option<u16>,
 }
+
+// --- Prometheus Metrics ---
+use once_cell::sync::Lazy;
+use prometheus::{
+    register_counter, register_gauge, register_histogram, Counter, Encoder, Gauge, Histogram, TextEncoder,
+};
+
+static TASKS_PROCESSED_TOTAL: Lazy<Counter> = Lazy::new(|| {
+    register_counter!("worker_tasks_processed_total", "Total number of tasks processed by the worker.")
+        .expect("Failed to register worker_tasks_processed_total counter")
+});
+
+static TASKS_FILTERED_TOTAL: Lazy<Counter> = Lazy::new(|| {
+    register_counter!("worker_tasks_filtered_total", "Total number of tasks filtered by the pipeline.")
+        .expect("Failed to register worker_tasks_filtered_total counter")
+});
+
+static TASKS_FAILED_TOTAL: Lazy<Counter> = Lazy::new(|| {
+    register_counter!("worker_tasks_failed_total", "Total number of tasks that resulted in a pipeline error.")
+        .expect("Failed to register worker_tasks_failed_total counter")
+});
+
+static TASK_DESERIALIZATION_ERRORS_TOTAL: Lazy<Counter> = Lazy::new(|| {
+    register_counter!("worker_task_deserialization_errors_total", "Total number of errors deserializing incoming task messages.")
+        .expect("Failed to register worker_task_deserialization_errors_total counter")
+});
+
+static OUTCOME_PUBLISH_ERRORS_TOTAL: Lazy<Counter> = Lazy::new(|| {
+    register_counter!("worker_outcome_publish_errors_total", "Total number of errors publishing outcome messages.")
+        .expect("Failed to register worker_outcome_publish_errors_total counter")
+});
+
+static TASK_PROCESSING_DURATION_SECONDS: Lazy<Histogram> = Lazy::new(|| {
+    register_histogram!(
+        "worker_task_processing_duration_seconds",
+        "Histogram of task processing durations (from message receipt to outcome published/error)."
+    ).expect("Failed to register worker_task_processing_duration_seconds histogram")
+});
+
+static ACTIVE_PROCESSING_TASKS: Lazy<Gauge> = Lazy::new(|| {
+    register_gauge!("worker_active_processing_tasks", "Number of tasks currently being processed concurrently.")
+        .expect("Failed to register worker_active_processing_tasks gauge")
+});
+
+
+// Axum handler for /metrics
+async fn metrics_handler() -> (axum::http::StatusCode, String) {
+    let encoder = TextEncoder::new();
+    let mut buffer = vec![];
+    if let Err(e) = encoder.encode(&prometheus::gather(), &mut buffer) {
+        error!("Could not encode prometheus metrics: {}", e);
+        return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, format!("Could not encode prometheus metrics: {}", e));
+    }
+    match String::from_utf8(buffer) {
+        Ok(s) => (axum::http::StatusCode::OK, s),
+        Err(e) => {
+            error!("Prometheus metrics UTF-8 error: {}", e);
+            (axum::http::StatusCode::INTERNAL_SERVER_ERROR, format!("Prometheus metrics UTF-8 error: {}", e))
+        }
+    }
+}
+
 
 // Re-use the connection helper from producer (or move to lib.rs if desired)
 async fn connect_rabbitmq(addr: &str) -> LapinResult<Connection> {
@@ -71,14 +139,15 @@ async fn connect_rabbitmq(addr: &str) -> LapinResult<Connection> {
     loop {
         match Connection::connect(addr, options.clone()).await {
             Ok(conn) => {
-                println!("Successfully connected to RabbitMQ at {}", addr);
+                info!("Successfully connected to RabbitMQ at {}", addr);
                 return Ok(conn);
             }
             Err(e) => {
                 attempts += 1;
-                eprintln!(
-                    "Failed to connect to RabbitMQ (attempt {}): {}. Retrying in 5 seconds...",
-                    attempts, e
+                error!(
+                    attempt = attempts,
+                    error = %e,
+                    "Failed to connect to RabbitMQ. Retrying in 5 seconds..."
                 );
                 if attempts >= 5 {
                     return Err(e);
@@ -91,13 +160,18 @@ async fn connect_rabbitmq(addr: &str) -> LapinResult<Connection> {
 
 // {{ Add the new function to build pipeline from configuration }}
 /// Builds the processing pipeline based on the configuration read from YAML.
+#[instrument(skip(config), fields(num_steps = config.pipeline.len()))]
 fn build_pipeline_from_config(config: &PipelineConfig) -> Result<Vec<Box<dyn ProcessingStep>>> {
     let mut steps: Vec<Box<dyn ProcessingStep>> = Vec::new();
+    info!("Building pipeline from configuration...");
 
-    for step_config in &config.pipeline {
+    for (i, step_config) in config.pipeline.iter().enumerate() {
+        let step_span = info_span!("pipeline_step", index = i, type = step_config.name());
+        let _enter = step_span.enter();
+
         let step: Box<dyn ProcessingStep> = match step_config {
             StepConfig::C4QualityFilter(params) => {
-                println!("Adding C4QualityFilter with params: {:?}", params);
+                debug!(params = ?params, "Adding C4QualityFilter");
                 Box::new(C4QualityFilter::new(
                     params.min_sentences,
                     params.min_words_per_sentence,
@@ -105,7 +179,7 @@ fn build_pipeline_from_config(config: &PipelineConfig) -> Result<Vec<Box<dyn Pro
                 ))
             }
             StepConfig::GopherRepetitionFilter(params) => {
-                println!("Adding GopherRepetitionFilter with params: {:?}", params);
+                debug!(params = ?params, "Adding GopherRepetitionFilter");
                 Box::new(GopherRepetitionFilter::new(
                     params.dup_line_frac,
                     params.dup_para_frac,
@@ -116,7 +190,7 @@ fn build_pipeline_from_config(config: &PipelineConfig) -> Result<Vec<Box<dyn Pro
                 ))
             }
             StepConfig::GopherQualityFilter(params) => {
-                println!("Adding GopherQualityFilter with params: {:?}", params);
+                debug!(params = ?params, "Adding GopherQualityFilter");
                 Box::new(GopherQualityFilter::new(
                     params.min_doc_words,
                     params.max_doc_words,
@@ -132,10 +206,13 @@ fn build_pipeline_from_config(config: &PipelineConfig) -> Result<Vec<Box<dyn Pro
             } // Add cases for other StepConfig variants here if you define more
         };
         steps.push(step);
+        info!("Added step: {}", step_config.name());
     }
 
     if steps.is_empty() {
-        println!("Warning: Building an empty pipeline from configuration!");
+        warn!("Warning: Building an empty pipeline from configuration!");
+    } else {
+        info!("Pipeline built successfully with {} steps.", steps.len());
     }
     Ok(steps)
 }
@@ -144,17 +221,41 @@ fn build_pipeline_from_config(config: &PipelineConfig) -> Result<Vec<Box<dyn Pro
 async fn main() -> Result<()> {
     let args = Args::parse();
 
-    println!("Worker starting.");
-    // {{ Log the config file being used }}
-    println!(
+    // Initialize tracing subscriber
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("info")); // Default to info if RUST_LOG is not set
+    fmt::Subscriber::builder().with_env_filter(filter).init();
+
+    // --- Optional: Start Metrics Endpoint ---
+    if let Some(port) = args.metrics_port {
+        let app = axum::Router::new().route("/metrics", axum::routing::get(metrics_handler));
+        let listener_addr = format!("0.0.0.0:{}", port);
+        info!("Metrics endpoint will be available at http://{}/metrics", listener_addr);
+
+        tokio::spawn(async move {
+            match tokio::net::TcpListener::bind(&listener_addr).await {
+                Ok(listener) => {
+                    if let Err(e) = axum::serve(listener, app).await {
+                        error!("Metrics server error: {}", e);
+                    }
+                }
+                Err(e) => {
+                    error!("Failed to bind metrics server to {}: {}", listener_addr, e);
+                }
+            }
+        });
+    }
+
+    info!("Worker starting.");
+    info!(
         "Loading pipeline configuration from: {}",
         args.pipeline_config.display()
     );
-    println!(
-        "Consuming from queue '{}', publishing outcomes to '{}' @ {}", // Updated log
+    info!(
+        "Consuming from queue '{}', publishing outcomes to '{}' @ {}",
         args.task_queue, args.results_queue, args.amqp_addr
     );
-    println!("Prefetch count: {}", args.prefetch_count);
+    info!("Prefetch count: {}", args.prefetch_count);
 
     // {{ Load and parse the pipeline configuration }}
     let pipeline_config: PipelineConfig = load_pipeline_config(&args.pipeline_config)?;
@@ -221,6 +322,8 @@ async fn main() -> Result<()> {
         std::process::id(),
         chrono::Utc::now().timestamp()
     );
+    info!(consumer_tag = %consumer_tag, "Worker started consuming tasks. Waiting for messages...");
+
     let mut consumer = consume_channel
         .basic_consume(
             &args.task_queue,
@@ -231,7 +334,8 @@ async fn main() -> Result<()> {
         .await
         .map_err(|e| PipelineError::QueueError(format!("Failed to start consuming: {}", e)))?;
 
-    println!("Worker started consuming tasks. Waiting for messages...");
+    // This println! is now an info! log above.
+    // println!("Worker started consuming tasks. Waiting for messages...");
 
     // 6. Process messages from the stream
     while let Some(delivery_result) = consumer.next().await {
@@ -243,139 +347,110 @@ async fn main() -> Result<()> {
 
                 // Spawn a Tokio task to process the message concurrently
                 tokio::spawn(async move {
-                    match serde_json::from_slice::<TextDocument>(&delivery.data) {
+                    ACTIVE_PROCESSING_TASKS.inc(); // Increment gauge when task starts
+                    let processing_timer = TASK_PROCESSING_DURATION_SECONDS.start_timer(); // Start timer
+
+                    let result = match serde_json::from_slice::<TextDocument>(&delivery.data) {
                         Ok(doc) => {
-                            let outcome: Option<ProcessingOutcome>; // Variable to hold the outcome message
-                            let original_doc_id = doc.id.clone(); // Clone id for logging in case of error/filtering
+                            let original_doc_id = doc.id.clone(); 
+                            
+                            let task_span = info_span!("process_task", doc_id = %original_doc_id, delivery_tag = %delivery.delivery_tag);
+                            let _enter = task_span.enter();
 
-                            println!("Processing document ID: {}", original_doc_id);
+                            debug!("Processing document"); 
                             match executor_clone.run_single_async(doc).await {
-                                // Success case remains the same
                                 Ok(processed_doc) => {
-                                    println!(
-                                        "Successfully processed document ID: {}",
-                                        processed_doc.id
-                                    );
-                                    // Set outcome to Success
-                                    outcome = Some(ProcessingOutcome::Success(processed_doc));
+                                    debug!(processed_doc_id = %processed_doc.id, "Successfully processed document"); 
+                                    TASKS_PROCESSED_TOTAL.inc(); // Increment success counter
+                                    Some(ProcessingOutcome::Success(processed_doc))
                                 }
-
                                 Err(pipeline_error) => {
-                                    // Check if the top-level error is a StepError
-                                    if let PipelineError::StepError { step_name, source } =
-                                        pipeline_error
-                                    {
-                                        // Now, check the *source* of the StepError
-                                        // We need to dereference the Box to match the inner error
+                                    if let PipelineError::StepError { step_name, source } = pipeline_error {
                                         match *source {
-                                            PipelineError::DocumentFiltered {
-                                                document,
-                                                reason,
-                                            } => {
-                                                // Found the filtered error inside StepError!
-                                                println!(
-                                                    "Document ID: {} was filtered by step '{}'. Reason: {}",
-                                                    document.id, step_name, reason
-                                                );
-                                                // Set outcome to Filtered
-                                                outcome = Some(ProcessingOutcome::Filtered {
-                                                    document,
-                                                    reason,
-                                                });
+                                            PipelineError::DocumentFiltered { document, reason, } => {
+                                                info!(filtered_doc_id = %document.id, %step_name, %reason, "Document was filtered"); 
+                                                TASKS_FILTERED_TOTAL.inc(); // Increment filtered counter
+                                                Some(ProcessingOutcome::Filtered { document, reason })
                                             }
-                                            // Any other error nested within StepError is a genuine processing error
                                             other_error => {
-                                                eprintln!(
-                                                    "Pipeline step '{}' failed for doc ID {}: {}",
-                                                    step_name,
-                                                    original_doc_id,
-                                                    other_error // Log the inner error
-                                                );
-                                                outcome = None; // Don't send an outcome for pipeline errors
+                                                error!(%step_name, error = %other_error, "Pipeline step failed");
+                                                TASKS_FAILED_TOTAL.inc(); // Increment failed counter
+                                                None // Don't send outcome for pipeline errors
                                             }
                                         }
                                     } else {
-                                        // Handle errors returned by run_single_async that *aren't* StepErrors
-                                        // (Currently unlikely based on executor code, but good practice)
-                                        eprintln!(
-                                            "Unexpected pipeline error for doc ID {}: {}",
-                                            original_doc_id, pipeline_error
-                                        );
-                                        outcome = None; // Don't send an outcome
+                                        error!(error = %pipeline_error, "Unexpected pipeline error");
+                                        TASKS_FAILED_TOTAL.inc(); // Increment failed counter
+                                        None // Don't send outcome
                                     }
                                 }
-                            }
-
-                            // The rest of the code (publishing outcome, acking) remains the same...
-                            // Send outcome back to producer if it's Success or Filtered
-                            if let Some(ref actual_outcome) = outcome {
-                                match serde_json::to_vec(actual_outcome) {
-                                    Ok(payload) => {
-                                        // ... (publish logic)
-                                        let publish_confirm = publish_channel_clone
-                                            .basic_publish(
-                                                "", // Default exchange
-                                                &results_queue_name,
-                                                BasicPublishOptions::default(),
-                                                &payload,
-                                                AMQPProperties::default().with_delivery_mode(2), // Persistent
-                                            )
-                                            .await;
-
-                                        match publish_confirm {
-                                            Ok(confirmation) => match confirmation.await { // Wait for broker confirmation
-                                                Ok(_) => println!("Published outcome for doc ID: {}", original_doc_id), // Use original_doc_id
-                                                Err(e) => eprintln!("Failed publish confirmation for outcome (Doc ID {}): {}", original_doc_id, e),
-                                            },
-                                            Err(e) => eprintln!("Failed to initiate publish for outcome (Doc ID {}): {}", original_doc_id, e),
-                                        }
-                                    }
-                                    Err(e) => {
-                                        eprintln!(
-                                            "Failed to serialize outcome for doc ID {}: {}",
-                                            original_doc_id, e
-                                        );
-                                    }
-                                }
-                            }
-
-                            // Acknowledge the original task message regardless of outcome
-                            if let Err(ack_err) = delivery.ack(BasicAckOptions::default()).await {
-                                eprintln!(
-                                    "Failed to ack task message {} for doc ID {}: {}",
-                                    delivery.delivery_tag, original_doc_id, ack_err
-                                );
                             }
                         }
                         Err(e) => {
-                            // Handle deserialization errors
-                            eprintln!(
-                                "Failed to deserialize task message {}: {}. Payload: {:?}",
-                                delivery.delivery_tag,
-                                e,
-                                std::str::from_utf8(&delivery.data).unwrap_or("[invalid utf8]")
+                            error!(
+                                delivery_tag = %delivery.delivery_tag,
+                                error = %e,
+                                payload = %String::from_utf8_lossy(&delivery.data),
+                                "Failed to deserialize task message"
                             );
-                            // Acknowledge the poison pill task message
-                            if let Err(ack_err) = delivery.ack(BasicAckOptions::default()).await {
-                                eprintln!(
-                                    "Failed to ack task message {} after deserialization error: {}",
-                                    delivery.delivery_tag, ack_err
-                                );
+                            TASK_DESERIALIZATION_ERRORS_TOTAL.inc(); // Increment deserialization error counter
+                            None // No outcome on deserialization error
+                        }
+                    };
+
+                    // Send outcome back to producer if it's Success or Filtered
+                    if let Some(actual_outcome) = result { // Use the result variable
+                        match serde_json::to_vec(&actual_outcome) {
+                            Ok(payload) => {
+                                let publish_confirm = publish_channel_clone
+                                    .basic_publish(
+                                        "", 
+                                        &results_queue_name,
+                                        BasicPublishOptions::default(),
+                                        &payload,
+                                        AMQPProperties::default().with_delivery_mode(2), 
+                                    )
+                                    .await;
+
+                                match publish_confirm {
+                                    Ok(confirmation) => match confirmation.await { 
+                                        Ok(_) => debug!("Published outcome"), 
+                                        Err(e) => {
+                                            error!(error = %e, "Failed publish confirmation for outcome");
+                                            OUTCOME_PUBLISH_ERRORS_TOTAL.inc(); // Increment publish error counter
+                                        }
+                                    },
+                                    Err(e) => {
+                                        error!(error = %e, "Failed to initiate publish for outcome");
+                                        OUTCOME_PUBLISH_ERRORS_TOTAL.inc(); // Increment publish error counter
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                error!(error = %e, "Failed to serialize outcome");
+                                // Consider a metric for outcome serialization errors if needed
                             }
                         }
                     }
+
+                    // Acknowledge the original task message regardless of outcome or error
+                    if let Err(ack_err) = delivery.ack(BasicAckOptions::default()).await {
+                        error!(error = %ack_err, "Failed to ack task message");
+                        // Consider a metric for ACK errors if needed
+                    }
+
+                    processing_timer.observe_duration(); // Observe processing duration
+                    ACTIVE_PROCESSING_TASKS.dec(); // Decrement gauge when task finishes
                 });
             }
             Err(e) => {
-                // Handle errors in receiving messages from RabbitMQ (e.g., channel closed)
-                eprintln!("Error receiving task message from consumer stream: {}", e);
-                // Break the loop to stop the worker if the consumer stream fails
+                error!(error = %e, "Error receiving task message from consumer stream. Worker will stop.");
                 break;
             }
         }
     }
 
-    println!("Worker stopped consuming tasks.");
+    info!("Worker stopped consuming tasks.");
 
     // Optional: Graceful shutdown of channels and connection
     // Note: Depending on error handling, channels might already be closed.
