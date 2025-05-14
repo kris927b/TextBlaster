@@ -174,6 +174,7 @@ The current pipeline executed by the worker (in `src/bin/worker.rs`) includes:
 1.  **`C4QualityFilter`**: (`src/pipeline/filters/c4_filters.rs`) Checks for minimum sentence count, minimum words per sentence, maximum word length, and sentence-ending punctuation.
 2.  **`GopherRepetitionFilter`**: (`src/pipeline/filters/gopher_rep.rs`) Filters documents based on thresholds for duplicate lines/paragraphs (by count and character fraction) and duplicate n-grams.
 3.  **`GopherQualityFilter`**: (`src/pipeline/filters/gopher_quality.rs`) Filters documents based on word count, average word length, symbol ratios, bullet/ellipsis line ratios, alphabetic ratio, and stop-word presence.
+4.  **`LanguageDetectionFilter`**: (`src/pipeline/filters/language_filter.rs`) Filters documents based on language. Uses the `whatlang` package for detection. 
 
 Refer to the source files in `src/pipeline/filters/` for detailed implementation and parameter explanations.
 
