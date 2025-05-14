@@ -383,52 +383,48 @@ async fn main() -> Result<()> {
                 let executor_clone = Arc::clone(&executor);
                 let publish_channel_clone = publish_channel.clone();
                 let results_queue_name = args.results_queue.clone();
+                let worker_id = consumer_tag.clone(); // Clone consumer_tag for use in this task
 
                 // Spawn a Tokio task to process the message concurrently
                 tokio::spawn(async move {
                     ACTIVE_PROCESSING_TASKS.inc(); // Increment gauge when task starts
                     let processing_timer = TASK_PROCESSING_DURATION_SECONDS.start_timer(); // Start timer
 
-                    let result = match serde_json::from_slice::<TextDocument>(&delivery.data) {
+                    let result: Option<ProcessingOutcome> = match serde_json::from_slice::<
+                        TextDocument,
+                    >(
+                        &delivery.data
+                    ) {
                         Ok(doc) => {
                             let original_doc_id = doc.id.clone();
-
                             let task_span = info_span!("process_task", doc_id = %original_doc_id, delivery_tag = %delivery.delivery_tag);
                             let _enter = task_span.enter();
-
                             debug!("Processing document");
-                            match executor_clone.run_single_async(doc).await {
+
+                            match executor_clone.run_single_async(doc.clone()).await {
+                                // Clone doc for error case
                                 Ok(processed_doc) => {
                                     debug!(processed_doc_id = %processed_doc.id, "Successfully processed document");
                                     TASKS_PROCESSED_TOTAL.inc(); // Increment success counter
                                     Some(ProcessingOutcome::Success(processed_doc))
                                 }
                                 Err(pipeline_error) => {
-                                    if let PipelineError::StepError { step_name, source } =
-                                        pipeline_error
-                                    {
-                                        match *source {
-                                            PipelineError::DocumentFiltered {
-                                                document,
-                                                reason,
-                                            } => {
-                                                info!(filtered_doc_id = %document.id, %step_name, %reason, "Document was filtered");
-                                                TASKS_FILTERED_TOTAL.inc(); // Increment filtered counter
-                                                Some(ProcessingOutcome::Filtered {
-                                                    document,
-                                                    reason,
-                                                })
-                                            }
-                                            other_error => {
-                                                error!(%step_name, error = %other_error, "Pipeline step failed");
-                                                TASKS_FAILED_TOTAL.inc(); // Increment failed counter
-                                                None // Don't send outcome for pipeline errors
-                                            }
+                                    match pipeline_error {
+                                        PipelineError::DocumentFiltered { document, reason } => {
+                                            info!(filtered_doc_id = %document.id, %reason, "Document was filtered");
+                                            TASKS_FILTERED_TOTAL.inc(); // Increment filtered counter
+                                            Some(ProcessingOutcome::Filtered { document, reason })
                                         }
-                                    } else {
-                                        error!(error = %pipeline_error, "Unexpected pipeline error");
-                                        TASKS_FAILED_TOTAL.inc(); // Increment failed counter
-                                        None // Don't send outcome
+                                        // Handle other PipelineError variants as ProcessingOutcome::Error
+                                        other_error => {
+                                            error!(error = %other_error, "Pipeline execution failed with unexpected error");
+                                            TASKS_FAILED_TOTAL.inc(); // Increment failed counter
+                                            Some(ProcessingOutcome::Error {
+                                                document: doc, // Use the original document
+                                                error_message: other_error.to_string(),
+                                                worker_id: worker_id.clone(), // Use the cloned worker_id
+                                            })
+                                        }
                                     }
                                 }
                             }
@@ -445,7 +441,7 @@ async fn main() -> Result<()> {
                         }
                     };
 
-                    // Send outcome back to producer if it's Success or Filtered
+                    // Send outcome back to producer if it's Success or Filtered or Error
                     if let Some(actual_outcome) = result {
                         // Use the result variable
                         match serde_json::to_vec(&actual_outcome) {

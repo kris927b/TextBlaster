@@ -24,6 +24,10 @@ pub enum ProcessingOutcome {
         document: TextDocument,
         reason: String,
     },
-    // Potential future extension:
-    // Error { id: String, error_details: String },
+    /// An error occurred during processing a pipeline step.
+    Error {
+        document: TextDocument,
+        error_message: String,
+        worker_id: String,
+    },
 }

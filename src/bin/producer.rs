@@ -109,6 +109,14 @@ static RESULTS_FILTERED_TOTAL: Lazy<Counter> = Lazy::new(|| {
     .expect("Failed to register RESULTS_FILTERED_TOTAL counter")
 });
 
+static RESULTS_ERROR_TOTAL: Lazy<Counter> = Lazy::new(|| {
+    register_counter!(
+        "producer_results_error_total",
+        "Total number of error results."
+    )
+    .expect("Failed to register RESULTS_ERROR_TOTAL counter")
+});
+
 static RESULT_DESERIALIZATION_ERRORS_TOTAL: Lazy<Counter> = Lazy::new(|| {
     register_counter!(
         "producer_result_deserialization_errors_total",
@@ -502,6 +510,20 @@ async fn main() -> Result<()> {
                                         }
                                     }
                                 }
+                            }
+                            ProcessingOutcome::Error {
+                                document,
+                                error_message,
+                                worker_id,
+                            } => {
+                                error!(
+                                    doc_id = %document.id,
+                                    worker_id = %worker_id,
+                                    error = %error_message,
+                                    "Task processing failed with an error"
+                                );
+                                RESULTS_ERROR_TOTAL.inc(); // Increment the failed tasks counter
+                                                           // TODO: Implement writing error details to a separate log/file
                             }
                         }
                     }
