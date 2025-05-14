@@ -25,7 +25,7 @@ use lapin::{
     Result as LapinResult,
 };
 use TextBlaster::pipeline::filters::{
-    C4QualityFilter, GopherQualityFilter, GopherRepetitionFilter,
+    C4QualityFilter, GopherQualityFilter, GopherRepetitionFilter, LanguageDetectionFilter
 };
 // If GopherQualityFilter uses it
 use serde_json;
@@ -202,6 +202,13 @@ fn build_pipeline_from_config(config: &PipelineConfig) -> Result<Vec<Box<dyn Pro
                     params.max_non_alpha_words_ratio,
                     params.min_stop_words,
                     params.stop_words.clone(), // Clone the Option<Vec<String>>
+                ))
+            }
+            StepConfig::LanguageDetectionFilter(params) => {
+                debug!(params = ?params, "Adding LanguageDetectionFilter");
+                Box::new(LanguageDetectionFilter::new(
+                    params.min_confidence,
+                    params.allowed_languages.clone()
                 ))
             } // Add cases for other StepConfig variants here if you define more
         };

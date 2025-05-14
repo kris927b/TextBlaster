@@ -1,4 +1,8 @@
 pipeline:
+  - type: LanguageDetectionFilter
+    min_confidence: 0.65
+    allowed_languages: [ "dan" ]
+    
   - type: C4QualityFilter
     min_sentences: 10
     min_words_per_sentence: 3

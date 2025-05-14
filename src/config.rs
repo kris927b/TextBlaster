@@ -30,6 +30,7 @@ pub enum StepConfig {
     C4QualityFilter(C4QualityParams),
     GopherRepetitionFilter(GopherRepetitionParams),
     GopherQualityFilter(GopherQualityParams),
+    LanguageDetectionFilter(LanguageDetectionParams),
     // Add other filter/step types here as needed
 }
 
@@ -40,6 +41,7 @@ impl StepConfig {
             StepConfig::C4QualityFilter(_) => "C4QualityFilter",
             StepConfig::GopherRepetitionFilter(_) => "GopherRepetitionFilter",
             StepConfig::GopherQualityFilter(_) => "GopherQualityFilter",
+            StepConfig::LanguageDetectionFilter(_) => "LanguageDetectionFilter",
             // Add cases for other StepConfig variants here
         }
     }
@@ -83,6 +85,13 @@ pub struct GopherQualityParams {
     pub min_stop_words: Option<usize>,
     // Optional list of stop words; if None, the filter's default will be used.
     pub stop_words: Option<Vec<String>>,
+}
+
+// Parameters for the LangaugeDetectionFilter
+#[derive(Deserialize, Debug, Clone)]
+pub struct LanguageDetectionParams {
+    pub min_confidence: f64,
+    pub allowed_languages: Vec<String>,
 }
 
 // {{ Add the new function to load pipeline configuration }}
