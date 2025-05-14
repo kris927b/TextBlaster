@@ -1,0 +1,36 @@
+# This workflow builds and tests the Rust project on pull requests.
+name: Rust CI
+
+on:
+  pull_request:
+    branches:
+      - main # Or your main development branch name (e.g., master, develop)
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest # Use the latest Ubuntu runner
+
+    steps:
+      # Checkout the code from the repository
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Set up the Rust toolchain
+      # This action installs the specified Rust version and adds cargo to the PATH
+      - name: Set up Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable # Use the stable Rust toolchain
+          profile: minimal # Install a minimal profile
+          override: true # Override the default toolchain if one is already installed
+
+      # Build the Rust project
+      # This command compiles the project and checks for errors
+      - name: Build project
+        run: cargo build --verbose
+
+      # Run the tests
+      # This command executes all tests in the project
+      - name: Run tests
+        run: cargo test --verbose
+
