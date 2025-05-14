@@ -1,39 +1,96 @@
-// src/pipeline/filters/C4_filter.rs (or wherever your filter step is)
-
 use crate::data_model::TextDocument;
 use crate::error::{PipelineError, Result};
 use crate::executor::ProcessingStep;
 use crate::utils::text::{split_into_sentences, split_into_words};
 
 use async_trait::async_trait;
+use lazy_static::lazy_static;
+use regex::Regex;
 
-/// A composite filter that enforces multiple quality checks on documents:
-/// 1) Minimum number of sentences
-/// 2) Minimum number of words per sentence
-/// 3) Maximum word length
-/// 4) Sentence terminal punctuation
+// Constants based on C4 and reference implementation
+const END_PUNCTUATION: [char; 4] = ['.', '!', '?', '"'];
+const ELLIPSIS: &str = "...";
+
+lazy_static! {
+    static ref POLICY_SUBSTRINGS: Vec<&'static str> = vec![
+        "cookie",
+        "cookies",
+        "terms of use",
+        "privacy policy",
+        "gdpr",
+        "ccpa",
+        "california consumer privacy act",
+        "do not sell my personal information",
+    ];
+    // Simple regex for Wikipedia-style citations like [1], [2, 3], [45]
+    static ref CITATION_REGEX: Regex = Regex::new(r"\[\d+(?:,\s*\d+)*\]").expect("Invalid regex");
+}
+
+/// Applies heuristic rules from C4 https://jmlr.org/papers/volume21/20-074/20-074.pdf
+///
+/// - We only retained lines that ended in a terminal punctuation mark (! . " ?)
+/// - We discarded any page with fewer than 5 sentences and only retained lines that contained at least 3 words
+/// - [NOT IMPLEMENTED IN RUST] We removed any page that contained any word on the “List of Dirty, Naughty, Obscene or Otherwise Bad Words”
+/// - We removed any line with the word Javascript.
+/// - We removed any page where the phrase “lorem ipsum” appeared
+/// - We removed any pages that contained a curly bracket
+/// Additional filters not mentioned on the list from the paper but on the code:
+/// - Remove lines with one word over 1000 chars
+/// - Remove lines with cookies and terms of use keywords
+/// - Remove wikipedia style citations from the text
 pub struct C4QualityFilter {
-    min_sentences: usize,
-    min_words_per_sentence: usize,
+    split_paragraph: bool, // In Rust, we'll primarily use line-by-line as default
+    remove_citations: bool,
+    filter_no_terminal_punct: bool,
+    min_num_sentences: usize,
+    min_words_per_line: usize, // Changed to per line to match Python default
     max_word_length: usize,
+    filter_lorem_ipsum: bool,
+    filter_javascript: bool,
+    filter_curly_bracket: bool,
+    filter_policy: bool,
+    // language: String, // Language handling for sentence splitting might be more complex in Rust
 }
 
 impl C4QualityFilter {
     /// Create a new C4QualityFilter.
     ///
     /// # Arguments
-    /// * `min_sentences` - the minimum total sentences required
-    /// * `min_words_per_sentence` - the minimum words each sentence must contain
-    /// * `max_word_length` - the maximum allowed length for any word
+    /// * `split_paragraph` - whether to split by paragraph (\n) or sentence (not fully implemented yet)
+    /// * `remove_citations` - remove wikipedia style citations
+    /// * `filter_no_terminal_punct` - remove lines without terminal punctuation
+    /// * `min_num_sentences` - minimum total sentences required in the document (after line filtering)
+    /// * `min_words_per_line` - minimum words each line must contain
+    /// * `max_word_length` - maximum allowed length for any word in a line
+    /// * `filter_lorem_ipsum` - filter documents containing "lorem ipsum"
+    /// * `filter_javascript` - filter lines containing "javascript"
+    /// * `filter_curly_bracket` - filter documents containing "{"
+    /// * `filter_policy` - filter lines containing policy substrings
     pub fn new(
-        min_sentences: usize,
-        min_words_per_sentence: usize,
+        split_paragraph: bool,
+        remove_citations: bool,
+        filter_no_terminal_punct: bool,
+        min_num_sentences: usize,
+        min_words_per_line: usize,
         max_word_length: usize,
+        filter_lorem_ipsum: bool,
+        filter_javascript: bool,
+        filter_curly_bracket: bool,
+        filter_policy: bool,
+        // language: String,
     ) -> Self {
         C4QualityFilter {
-            min_sentences,
-            min_words_per_sentence,
+            split_paragraph,
+            remove_citations,
+            filter_no_terminal_punct,
+            min_num_sentences,
+            min_words_per_line,
             max_word_length,
+            filter_lorem_ipsum,
+            filter_javascript,
+            filter_curly_bracket,
+            filter_policy,
+            // language,
         }
     }
 }
@@ -45,175 +102,107 @@ impl ProcessingStep for C4QualityFilter {
     }
 
     async fn process(&self, document: TextDocument) -> Result<TextDocument> {
-        let mut document = document; // Make document mutable
+        let mut document = document;
+        let original_content = document.content.clone();
+        let lines: Vec<&str> = if self.split_paragraph {
+            document.content.lines().collect()
+        } else {
+            // Sentence splitting logic would go here if implemented
+            // For now, we'll stick to line splitting as the primary mode
+            split_into_sentences(&document.content)// Default to lines for now
+        };
+
+        let mut kept_lines: Vec<String> = Vec::new();
         let mut filter_reasons: Vec<String> = Vec::new();
 
-        // --- Calculate actual metrics ---
-        let sentences = split_into_sentences(&document.content);
-        let actual_sentence_count = sentences.len();
-        document.metadata.insert(
-            "c4_metric_sentence_count".to_string(),
-            actual_sentence_count.to_string(),
-        );
+        // Document-level checks that can fail early
+        if self.filter_lorem_ipsum && original_content.to_lowercase().contains("lorem ipsum") {
+            filter_reasons.push("lorem_ipsum".to_string());
+        }
+        if self.filter_curly_bracket && original_content.contains('{') {
+            filter_reasons.push("curly_bracket".to_string());
+        }
 
-        let mut actual_min_words_in_any_sentence = usize::MAX;
-        let mut actual_sentences_missing_punctuation_count = 0;
-        let mut found_non_empty_sentence = false;
+        if !filter_reasons.is_empty() {
+            let reasons_string = filter_reasons.join("; ");
+            document
+                .metadata
+                .insert("c4_filter_status".to_string(), "filtered".to_string());
+            document
+                .metadata
+                .insert("c4_filter_reasons".to_string(), reasons_string.clone());
+            return Err(PipelineError::DocumentFiltered {
+                document,
+                reason: reasons_string,
+            });
+        }
 
-        for sentence_str in &sentences {
-            let trimmed_sentence = sentence_str.trim();
-            if trimmed_sentence.is_empty() {
-                // Skip empty sentences for word count and punctuation checks,
-                // but they are part of the overall sentence_count.
-                // If min_words_per_sentence is > 0, an empty sentence implies 0 words,
-                // so this would be caught by the min_words_per_sentence check later if relevant.
-                continue;
-            }
-            found_non_empty_sentence = true;
+        // Line-by-line filtering
+        for line in lines {
+            let current_line = line.trim().to_string();
 
-            let words_in_sentence = split_into_words(trimmed_sentence);
-            let word_count_in_sentence = words_in_sentence.len();
-            if word_count_in_sentence < actual_min_words_in_any_sentence {
-                actual_min_words_in_any_sentence = word_count_in_sentence;
-            }
-
-            if let Some(last_char) = trimmed_sentence.chars().last() {
-                if !matches!(last_char, '.' | '!' | '?' | '"' | '\'') {
-                    actual_sentences_missing_punctuation_count += 1;
-                }
+            let processed_line = if self.remove_citations {
+                CITATION_REGEX.replace_all(&current_line, "").to_string()
             } else {
-                // This case means trimmed_sentence was empty, already handled by the continue.
-                // If it could somehow be non-empty but have no last_char (highly unlikely for valid UTF-8 string),
-                // it would imply it's missing punctuation. For simplicity, we assume non-empty trimmed strings have a last char.
-                // The existing `continue` for `trimmed_sentence.is_empty()` makes this robust.
-            }
-        }
+                current_line
+            };
 
-        if !found_non_empty_sentence {
-            // If all sentences were empty or there were no sentences
-            actual_min_words_in_any_sentence = 0;
-        }
-        // If actual_min_words_in_any_sentence is still usize::MAX, it means no non-empty sentences were found.
-        if actual_min_words_in_any_sentence == usize::MAX {
-            actual_min_words_in_any_sentence = 0; // Default to 0 if no non-empty sentences
-        }
+            { // Start a new scope for borrows
+                let line_l = processed_line.to_lowercase();
+                let words = split_into_words(&processed_line);
 
-        document.metadata.insert(
-            "c4_metric_min_words_in_any_sentence".to_string(),
-            actual_min_words_in_any_sentence.to_string(),
-        );
-        document.metadata.insert(
-            "c4_metric_sentences_missing_punctuation_count".to_string(),
-            actual_sentences_missing_punctuation_count.to_string(),
-        );
-
-        let all_words_in_doc = split_into_words(&document.content);
-        let mut actual_max_word_len_found = 0;
-        for word in &all_words_in_doc {
-            // Iterate over collected words
-            let len = word.chars().count();
-            if len > actual_max_word_len_found {
-                actual_max_word_len_found = len;
-            }
-        }
-        document.metadata.insert(
-            "c4_metric_max_word_len_found".to_string(),
-            actual_max_word_len_found.to_string(),
-        );
-
-        // --- Apply Filters and Collect Reasons ---
-
-        // 1. Minimum number of sentences
-        if actual_sentence_count < self.min_sentences {
-            filter_reasons.push(format!(
-                "Too few sentences (found {}, required {})",
-                actual_sentence_count, self.min_sentences
-            ));
-        }
-
-        // 2. Minimum words per sentence & 4. Sentence terminal punctuation (checked per non-empty sentence)
-        // These checks now need to iterate again, or we adapt the logic.
-        // For simplicity and to match the new structure, let's re-iterate for checks.
-        // Alternatively, the checks can use the pre-calculated min_words and missing_punctuation_count.
-
-        // Let's use the pre-calculated metrics where possible.
-        // The original filter fails on the *first* bad sentence for min_words or punctuation.
-        // The new metrics `actual_min_words_in_any_sentence` and `actual_sentences_missing_punctuation_count`
-        // are global. If we want to preserve "fail on first", the logic is more complex.
-        // Sticking to the "calculate all, then check all" pattern:
-
-        if self.min_words_per_sentence > 0
-            && found_non_empty_sentence
-            && actual_min_words_in_any_sentence < self.min_words_per_sentence
-        {
-            // Find the first sentence that violates this to provide a good error message
-            for sentence_str in &sentences {
-                let trimmed_sentence = sentence_str.trim();
-                if trimmed_sentence.is_empty() {
-                    continue;
+                // max_word_length filter
+                if self.max_word_length > 0 && words.iter().any(|w| w.chars().count() > self.max_word_length) {
+                    continue; // Drop line
                 }
-                let words_in_sentence = split_into_words(trimmed_sentence);
-                if words_in_sentence.len() < self.min_words_per_sentence {
-                    filter_reasons.push(format!(
-                        "Too few words in sentence: \"{}\" (found {}, required {})",
-                        trimmed_sentence,
-                        words_in_sentence.len(),
-                        self.min_words_per_sentence
-                    ));
-                    break; // Report first violating sentence
-                }
-            }
-        } else if self.min_words_per_sentence > 0
-            && actual_sentence_count > 0
-            && !found_non_empty_sentence
-        {
-            // This case means all sentences are empty (e.g. "   .   .   ") but min_words > 0 is required.
-            // The first empty sentence (effectively 0 words) would fail.
-            filter_reasons.push(format!(
-                "Too few words in sentence: \"{}\" (found 0, required {})",
-                sentences.get(0).map_or("", |s| s.trim()),
-                self.min_words_per_sentence
-            ));
-        }
 
-        if actual_sentences_missing_punctuation_count > 0 {
-            // Find the first sentence that violates this for a good error message
-            for sentence_str in &sentences {
-                let trimmed_sentence = sentence_str.trim();
-                if trimmed_sentence.is_empty() {
-                    continue;
-                }
-                if let Some(last_char) = trimmed_sentence.chars().last() {
-                    if !matches!(last_char, '.' | '!' | '?' | '"' | '\'') {
-                        filter_reasons.push(format!(
-                            "Sentence does not end with valid punctuation (sentence: \"{}\", last_char: '{}')",
-                            trimmed_sentence, last_char
-                        ));
-                        break; // Report first violating sentence
+                // end punctuation
+                if self.filter_no_terminal_punct {
+                    let ends_with_terminal_punct = processed_line.chars().last().map_or(false, |last_char| {
+                        END_PUNCTUATION.contains(&last_char)
+                    });
+                    let ends_with_ellipsis = processed_line.ends_with(ELLIPSIS);
+
+                    if !ends_with_terminal_punct || ends_with_ellipsis {
+                        continue; // Drop line
                     }
-                } else { /* Should not happen due to is_empty check */
                 }
-            }
+
+                // min words per line
+                if self.min_words_per_line > 0 && words.len() < self.min_words_per_line {
+                    continue; // Drop line
+                }
+
+                // javascript filter
+                if self.filter_javascript && line_l.contains("javascript") {
+                    continue; // Drop line
+                }
+
+                // policy filter
+                if self.filter_policy && POLICY_SUBSTRINGS.iter().any(|p| line_l.contains(p)) {
+                    continue; // Drop line
+                }
+            } // End of scope, line_l and words are dropped
+
+            // If line passes all filters, keep it
+            kept_lines.push(processed_line);
         }
 
-        // 3. Maximum word length
-        if self.max_word_length > 0 && actual_max_word_len_found > self.max_word_length {
-            // Find the first word that violates this for a good error message
-            for word in &all_words_in_doc {
-                // Re-use collected words
-                if word.chars().count() > self.max_word_length {
-                    filter_reasons.push(format!(
-                        "Word exceeds max length (word: \"{}\", length: {}, max: {})",
-                        word,
-                        word.chars().count(),
-                        self.max_word_length
-                    ));
-                    break; // Report first violating word
-                }
-            }
+        // Reconstruct document content from kept lines
+        document.content = kept_lines.join("\n").trim().to_string();
+
+        // Sentence count check on the filtered content
+        let sentences_in_kept_content = split_into_sentences(&document.content);
+        let actual_sentence_count = sentences_in_kept_content.len();
+
+        if self.min_num_sentences > 0 && actual_sentence_count < self.min_num_sentences {
+            filter_reasons.push(format!(
+                "too_few_sentences (found {}, required {})",
+                actual_sentence_count, self.min_num_sentences
+            ));
         }
 
-        // --- Final Decision ---
+        // Final Decision
         if !filter_reasons.is_empty() {
             let reasons_string = filter_reasons.join("; ");
             document
@@ -223,7 +212,7 @@ impl ProcessingStep for C4QualityFilter {
                 .metadata
                 .insert("c4_filter_reasons".to_string(), reasons_string.clone());
             Err(PipelineError::DocumentFiltered {
-                document: document,
+                document,
                 reason: reasons_string,
             })
         } else {
@@ -239,7 +228,7 @@ impl ProcessingStep for C4QualityFilter {
 mod tests {
     use super::*;
     use crate::data_model::TextDocument;
-    use std::collections::HashMap; // For TextDocument metadata
+    use std::collections::HashMap;
 
     // Helper to create a TextDocument for tests
     fn create_test_doc(id: &str, content: &str) -> TextDocument {
@@ -251,201 +240,235 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn test_document_passes_and_has_metadata() {
-        // Renamed from test_document_passes
-        let filter = C4QualityFilter::new(3, 3, 10); // min_sentences=3, min_words_per_sentence=3, max_word_length=10
-        let doc_content = "Hello world, this is a test. It should pass the filter! Is this okay?";
-        // Sentences:
-        // 1. "Hello world, this is a test" (6 words)
-        // 2. "It should pass the filter" (5 words)
-        // 3. "Is this okay" (3 words)
-        // Min words in any sentence is 3.
-        // Max word length: "Hello"(5), "world"(5), "this"(4), "test"(4), "should"(6), "pass"(4), "filter"(6), "okay"(4) -> max is 6.
-        let doc = create_test_doc("pass1", doc_content);
-        let result_doc = filter
-            .process(doc.clone())
-            .await
-            .expect("Document should pass");
+    // Helper to create a filter with common settings
+    fn default_filter() -> C4QualityFilter {
+        C4QualityFilter::new(
+            true, // split_paragraph
+            true, // remove_citations
+            true, // filter_no_terminal_punct
+            5,    // min_num_sentences
+            3,    // min_words_per_line
+            1000, // max_word_length
+            true, // filter_lorem_ipsum
+            true, // filter_javascript
+            true, // filter_curly_bracket
+            true, // filter_policy
+        )
+    }
 
+    #[tokio::test]
+    async fn test_document_passes() {
+        let filter = default_filter();
+        let doc_content = "This is the first sentence. This is the second sentence. This is the third sentence. This is the fourth sentence. This is the fifth sentence.";
+        let doc = create_test_doc("pass1", doc_content);
+        let result = filter.process(doc).await;
+        assert!(result.is_ok(), "Document should pass: {:?}", result.err());
+        let processed_doc = result.unwrap();
         assert_eq!(
-            result_doc.metadata.get("c4_filter_status"),
+            processed_doc.metadata.get("c4_filter_status"),
             Some(&"passed".to_string())
         );
-        assert_eq!(
-            result_doc.metadata.get("c4_metric_sentence_count"),
-            Some(&"3".to_string())
-        );
-        assert_eq!(
-            result_doc
-                .metadata
-                .get("c4_metric_min_words_in_any_sentence"),
-            Some(&"3".to_string())
-        ); // "Is this okay?" -> 4 words
-        assert_eq!(
-            result_doc
-                .metadata
-                .get("c4_metric_sentences_missing_punctuation_count"),
-            Some(&"0".to_string())
-        );
-        assert_eq!(
-            result_doc.metadata.get("c4_metric_max_word_len_found"),
-            Some(&"6".to_string())
-        ); // "should" or "filter"
+        // Check content is unchanged if no line filters applied
+        assert_eq!(processed_doc.content.trim(), doc_content.trim());
     }
 
     #[tokio::test]
     async fn test_too_few_sentences() {
-        let filter = C4QualityFilter::new(2, 1, 10);
-        let doc = create_test_doc("fail_sentences", "Hello world."); // 1 sentence
+        let filter = default_filter(); // min_num_sentences = 5
+        let doc_content = "One sentence. Two sentences. Three sentences. Four sentences.";
+        let doc = create_test_doc("fail_sentences", doc_content);
         let result = filter.process(doc).await;
         assert!(result.is_err());
-        if let Ok(processed_doc) = result {
-            // access metadata even on error for checking
-            assert_eq!(
-                processed_doc.metadata.get("c4_filter_status"),
-                Some(&"filtered".to_string())
-            );
-            assert_eq!(
-                processed_doc.metadata.get("c4_metric_sentence_count"),
-                Some(&"1".to_string())
-            );
-            assert!(processed_doc
-                .metadata
-                .get("c4_filter_reasons")
-                .unwrap()
-                .contains("Too few sentences (found 1, required 2)"));
-        } else if let Err(PipelineError::DocumentFiltered { reason, .. }) = result {
-            assert!(reason.contains("Too few sentences (found 1, required 2)"));
+        if let Err(PipelineError::DocumentFiltered { reason, .. }) = result {
+            assert!(reason.contains("too_few_sentences (found 4, required 5)"));
         } else {
             panic!("Expected DocumentFiltered error, got different error or Ok");
         }
     }
 
-    // Test: too_few_words_in_sentence
-    // The reason string should be the same, as we try to preserve the first error.
     #[tokio::test]
-    async fn test_too_few_words_in_sentence_metadata() {
-        let filter = C4QualityFilter::new(2, 3, 10);
-        let doc_content = "First sentence is fine. Oops.";
-        let doc = create_test_doc("fail_words_meta", doc_content);
+    async fn test_line_too_few_words() {
+        let filter = default_filter(); // min_words_per_line = 3
+        let doc_content = "This line is fine.\nTwo words.\nAnother good line. This is the fourth sentence. And the fifth sentence. Here is the sixth.";
+        let doc = create_test_doc("fail_line_words", doc_content);
         let result = filter.process(doc).await;
-        assert!(result.is_err());
-        match result.err().unwrap() {
-            PipelineError::DocumentFiltered { reason, .. } => {
-                assert!(
-                    reason.contains("Too few words in sentence: \"Oops.\" (found 1, required 3)")
-                );
-            }
-            _ => panic!("Expected DocumentFiltered error"),
-        }
-        // To check metadata:
-        // let processed_doc = filter.process(create_test_doc("fail_words_meta", doc_content)).await.unwrap_err().into_document_somehow();
-        // This requires a way to get the document back from the error or a different testing strategy.
-        // For now, focusing on reason string consistency for existing tests.
-    }
-
-    // test_sentence_ends_with_quote_passes: This should still pass, metadata can be checked.
-    #[tokio::test]
-    async fn test_sentence_ends_with_quote_passes_metadata() {
-        let filter = C4QualityFilter::new(1, 2, 10);
-        let doc_content = "He said \"Hello world\".";
-        let doc = create_test_doc("pass_quote_end_meta", doc_content);
-        let result_doc = filter.process(doc).await.expect("Document should pass");
+        assert!(result.is_ok(), "Document should pass after dropping line: {:?}", result.err());
+        let processed_doc = result.unwrap();
+        // The line "Two words." should be dropped
+        assert_eq!(processed_doc.content.trim(), "This line is fine.\nAnother good line. This is the fourth sentence. And the fifth sentence. Here is the sixth.");
         assert_eq!(
-            result_doc.metadata.get("c4_filter_status"),
+            processed_doc.metadata.get("c4_filter_status"),
             Some(&"passed".to_string())
         );
+    }
+
+    #[tokio::test]
+    async fn test_line_missing_terminal_punctuation() {
+        let filter = default_filter(); // filter_no_terminal_punct = true
+        let doc_content = "This line is fine.\nThis one is not\nAnd this is okay. Here is another sentence. And a fifth one. This is the sixth sentence.";
+        let doc = create_test_doc("fail_line_punc", doc_content);
+        let result = filter.process(doc).await;
+        assert!(result.is_ok(), "Document should pass after dropping line: {:?}", result.err());
+        let processed_doc = result.unwrap();
+        // The line "This one is not" should be dropped
+        assert_eq!(processed_doc.content.trim(), "This line is fine.\nAnd this is okay. Here is another sentence. And a fifth one. This is the sixth sentence.");
         assert_eq!(
-            result_doc.metadata.get("c4_metric_sentence_count"),
-            Some(&"1".to_string())
+            processed_doc.metadata.get("c4_filter_status"),
+            Some(&"passed".to_string())
         );
     }
 
-    // test_empty_document_content: Should still fail for too few sentences, metadata can be checked.
     #[tokio::test]
-    async fn test_empty_document_content_metadata() {
-        let filter = C4QualityFilter::new(1, 1, 10);
-        let doc = create_test_doc("empty_content_meta", "");
+    async fn test_line_ends_with_ellipsis() {
+        let filter = default_filter(); // filter_no_terminal_punct = true
+        let doc_content = "This line is fine.\nThis one ends with ellipsis...\nAnd this is okay. This is the fourth sentence. And the fifth sentence. Here is the sixth.";
+        let doc = create_test_doc("fail_line_ellipsis", doc_content);
+        let result = filter.process(doc).await;
+        assert!(result.is_ok(), "Document should pass after dropping line: {:?}", result.err());
+        let processed_doc = result.unwrap();
+        // The line "This one ends with ellipsis..." should be dropped
+        assert_eq!(processed_doc.content.trim(), "This line is fine.\nAnd this is okay. This is the fourth sentence. And the fifth sentence. Here is the sixth.");
+        assert_eq!(
+            processed_doc.metadata.get("c4_filter_status"),
+            Some(&"passed".to_string())
+        );
+    }
+
+
+    #[tokio::test]
+    async fn test_word_too_long() {
+        let filter = default_filter(); // max_word_length = 1000
+        let long_word = "a".repeat(1001);
+        let doc_content = format!("This line is fine.\nA line with a verylongword {}.\nAnother good line. This is the fourth sentence. And the fifth sentence. Here is the sixth.", long_word);
+        let doc = create_test_doc("fail_word_length", &doc_content);
+        let result = filter.process(doc).await;
+        assert!(result.is_ok(), "Document should pass after dropping line: {:?}", result.err());
+        let processed_doc = result.unwrap();
+        // The line with the long word should be dropped
+        assert_eq!(processed_doc.content.trim(), "This line is fine.\nAnother good line. This is the fourth sentence. And the fifth sentence. Here is the sixth.");
+        assert_eq!(
+            processed_doc.metadata.get("c4_filter_status"),
+            Some(&"passed".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn test_filter_lorem_ipsum() {
+        let filter = default_filter(); // filter_lorem_ipsum = true
+        let doc_content = "This is fine. Lorem ipsum dolor sit amet. This is also fine.";
+        let doc = create_test_doc("fail_lorem_ipsum", doc_content);
         let result = filter.process(doc).await;
         assert!(result.is_err());
-        if let Err(PipelineError::DocumentFiltered {
-            document: _,
-            reason,
-        }) = result
-        {
-            assert!(reason.contains("Too few sentences (found 0, required 1)"));
-            // At this point, the `document` that was processed and had metadata added is consumed by `Err`.
-            // To check its metadata, the test or `PipelineError` would need to provide access to it.
+        if let Err(PipelineError::DocumentFiltered { reason, .. }) = result {
+            assert!(reason.contains("lorem_ipsum"));
+        } else {
+            panic!("Expected DocumentFiltered error");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_filter_javascript() {
+        let filter = default_filter(); // filter_javascript = true
+        let doc_content = "This is fine.\nSome javascript code here.\nAnother good line. This is the fourth sentence. And the fifth sentence. Here is the sixth.";
+        let doc = create_test_doc("fail_javascript", doc_content);
+        let result = filter.process(doc).await;
+        assert!(result.is_ok(), "Document should pass after dropping line: {:?}", result.err());
+        let processed_doc = result.unwrap();
+        // The line with "javascript" should be dropped
+        assert_eq!(processed_doc.content.trim(), "This is fine.\nAnother good line. This is the fourth sentence. And the fifth sentence. Here is the sixth.");
+        assert_eq!(
+            processed_doc.metadata.get("c4_filter_status"),
+            Some(&"passed".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn test_filter_curly_bracket() {
+        let filter = default_filter(); // filter_curly_bracket = true
+        let doc_content = "This is fine.\nSome code block {}.\nAnother good line.";
+        let doc = create_test_doc("fail_curly_bracket", doc_content);
+        let result = filter.process(doc).await;
+        assert!(result.is_err());
+        if let Err(PipelineError::DocumentFiltered { reason, .. }) = result {
+            assert!(reason.contains("curly_bracket"));
+        } else {
+            panic!("Expected DocumentFiltered error");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_filter_policy() {
+        let filter = default_filter(); // filter_policy = true
+        let doc_content = "This is fine.\nRead our privacy policy.\nAnother good line. This is the fourth sentence. And the fifth sentence. Here is the sixth.";
+        let doc = create_test_doc("fail_policy", doc_content);
+        let result = filter.process(doc).await;
+        assert!(result.is_ok(), "Document should pass after dropping line: {:?}", result.err());
+        let processed_doc = result.unwrap();
+        // The line with "privacy policy" should be dropped
+        assert_eq!(processed_doc.content.trim(), "This is fine.\nAnother good line. This is the fourth sentence. And the fifth sentence. Here is the sixth.");
+        assert_eq!(
+            processed_doc.metadata.get("c4_filter_status"),
+            Some(&"passed".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn test_remove_citations() {
+        let filter = default_filter(); // remove_citations = true
+        let doc_content = "This is text [1]. Another sentence [2, 3]. Final text [45]. Here is the fourth sentence. And the fifth sentence. This is the sixth sentence.";
+        let doc = create_test_doc("remove_citations", doc_content);
+        let result = filter.process(doc).await;
+        assert!(result.is_ok(), "Document should pass after removing citations: {:?}", result.err());
+        let processed_doc = result.unwrap();
+        // Citations should be removed
+        assert_eq!(processed_doc.content.trim(), "This is text . Another sentence . Final text . Here is the fourth sentence. And the fifth sentence. This is the sixth sentence.");
+        assert_eq!(
+            processed_doc.metadata.get("c4_filter_status"),
+            Some(&"passed".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn test_empty_document_content() {
+        let filter = default_filter(); // min_num_sentences = 5
+        let doc = create_test_doc("empty_content", "");
+        let result = filter.process(doc).await;
+        assert!(result.is_err());
+        if let Err(PipelineError::DocumentFiltered { reason, .. }) = result {
+            assert!(reason.contains("too_few_sentences (found 0, required 5)"));
         } else {
             panic!("Expected DocumentFiltered error for empty content");
         }
     }
 
     #[tokio::test]
-    async fn test_missing_terminal_punctuation() {
-        let filter = C4QualityFilter::new(2, 2, 10);
-        let doc = create_test_doc("fail_punctuation", "This is okay. This is not"); // "This is not" lacks terminal punc
-        let result = filter.process(doc).await;
-        assert!(result.is_err());
-        match result.err().unwrap() {
-            PipelineError::DocumentFiltered { reason, .. } => {
-                assert!(reason.contains("Sentence does not end with valid punctuation (sentence: \"This is not\", last_char: 't')"));
-            }
-            _ => panic!("Expected DocumentFiltered error"),
-        }
-    }
-
-    #[tokio::test]
-    async fn test_word_too_long() {
-        let filter = C4QualityFilter::new(1, 2, 10);
-        // "shortsentence" is 13 chars long.
-        let doc = create_test_doc("fail_word_length", "A shortsentence here.");
-        let result = filter.process(doc).await;
-        assert!(result.is_err());
-        match result.err().unwrap() {
-            PipelineError::DocumentFiltered { reason, .. } => {
-                assert!(reason.contains(
-                    "Word exceeds max length (word: \"shortsentence\", length: 13, max: 10)"
-                ));
-            }
-            _ => panic!("Expected DocumentFiltered error"),
-        }
-    }
-
-    #[tokio::test]
-    async fn test_empty_document_content() {
-        let filter = C4QualityFilter::new(1, 1, 10);
-        let doc = create_test_doc("empty_content", "");
-        let result = filter.process(doc).await;
-        assert!(result.is_err());
-        match result.err().unwrap() {
-            PipelineError::DocumentFiltered { reason, .. } => {
-                // "" -> 0 sentences.
-                assert!(reason.contains("Too few sentences (found 0, required 1)"));
-            }
-            _ => panic!("Expected DocumentFiltered error for empty content"),
-        }
-    }
-
-    #[tokio::test]
     async fn test_content_just_spaces() {
-        let filter = C4QualityFilter::new(1, 1, 10);
-        let doc = create_test_doc("space_content", "   ");
+        let filter = default_filter(); // min_num_sentences = 5
+        let doc = create_test_doc("space_content", "   \n   ");
         let result = filter.process(doc).await;
         assert!(result.is_err());
-        match result.err().unwrap() {
-            PipelineError::DocumentFiltered { reason, .. } => {
-                // "   " -> 0 sentences after trimming in split_into_sentences.
-                assert!(reason.contains("Too few sentences (found 0, required 1)"));
-            }
-            _ => panic!("Expected DocumentFiltered error for space content"),
+        if let Err(PipelineError::DocumentFiltered { reason, .. }) = result {
+            // After trimming and filtering empty lines, there are 0 sentences.
+            assert!(reason.contains("too_few_sentences (found 0, required 5)"));
+        } else {
+            panic!("Expected DocumentFiltered error for space content");
         }
     }
 
     #[tokio::test]
     async fn test_zero_min_values_pass_minimal_doc() {
-        let filter = C4QualityFilter::new(0, 0, 5);
+        let filter = C4QualityFilter::new(
+            true, // split_paragraph
+            false, // remove_citations
+            false, // filter_no_terminal_punct
+            0,    // min_num_sentences
+            0,    // min_words_per_line
+            0, // max_word_length (0 means no limit in this context)
+            false, // filter_lorem_ipsum
+            false, // filter_javascript
+            false, // filter_curly_bracket
+            false, // filter_policy
+        );
         let doc = create_test_doc("zero_min_pass", "Ok."); // 1 sentence, 1 word, word length 2.
         let result = filter.process(doc).await;
         assert!(
@@ -453,91 +476,5 @@ mod tests {
             "Document should pass with zero min values: {:?}",
             result.err()
         );
-    }
-
-    #[tokio::test]
-    async fn test_zero_min_words_sentence_pass_empty_sentence() {
-        // This tests if a sentence like " ." (which becomes "" after trimming, 0 words) passes if min_words_per_sentence is 0.
-        // And if it needs punctuation. Current logic skips empty trimmed sentences for punctuation check.
-        let filter = C4QualityFilter::new(1, 0, 5); // 1 sentence, 0 words per sentence minimum
-        let doc = create_test_doc("zero_words_empty_sentence", " . ");
-        // `split_into_sentences(" . ")` might give `["."]` (depends on segmenter, after our trim)
-        // If `sentences` is `["."]`, then `trimmed_sentence` is `"."`. `split_into_words(".")` is `[]`. word_count is 0. Passes.
-        // `last_char` is `.`. Passes.
-        let result = filter.process(doc).await;
-        assert!(result.is_ok(), "Document with effectively empty but punctuated sentence should pass if min_words=0: {:?}", result.err());
-
-        // Test with no punctuation on the empty sentence
-        // let filter_no_punc = C4QualityFilter::new(1, 0, 5);
-        // let doc_no_punc = create_test_doc("zero_words_empty_sentence_no_punc", "Hello world");
-        // The above test doc will fail because "Hello world" (as a sentence) does not end with punctuation.
-        // The filter expects valid punctuation if the sentence is non-empty after trimming.
-    }
-
-    #[tokio::test]
-    async fn test_sentence_with_only_punctuation() {
-        // Part 1: Test that a document can pass if an "empty" sentence (like ".")
-        // is allowed due to min_words_per_sentence = 0.
-        let filter_part1 = C4QualityFilter::new(1, 0, 5); // max_word_length = 5
-        let doc_part1 = create_test_doc("punc_only_sentence_part1", "This is text. . Next one.");
-        let result_part1 = filter_part1.process(doc_part1).await;
-        assert!(
-            result_part1.is_ok(),
-            "Part 1: Should pass with sentence '.' if min_words=0. Actual: {:?}",
-            result_part1.err()
-        );
-
-        // Part 2: Test that a sentence consisting only of punctuation (like ".")
-        // FAILS if min_words_per_sentence > 0.
-        let filter_part2 = C4QualityFilter::new(1, 1, 5); // min_sentences = 1, min_words_per_sentence = 1, max_word_length = 5
-
-        // Test with a multi-sentence document where one sentence is just "."
-        // Using an even simpler string that should isolate the "." sentence failure.
-        let doc_part2_multi = create_test_doc("punc_only_sentence_fail_multi", ". .");
-        let result_part2_multi = filter_part2.process(doc_part2_multi.clone()).await;
-
-        // Expected: The first "." sentence should fail because word_count (0) < min_words_per_sentence (1).
-        assert!(
-            result_part2_multi.is_err(),
-            "Part 2 (multi-sentence '. .'): Document should fail. Actual: {:?}",
-            result_part2_multi.as_ref().map(|_| "Ok").unwrap_or("Err")
-        );
-        if let Err(PipelineError::DocumentFiltered { ref reason, .. }) = result_part2_multi {
-            // Adjust expectation: split_into_sentences likely treats ". ." as a single sentence ". .".
-            assert!(
-                reason.contains("Too few words in sentence: \". .\" (found 0, required 1)"),
-                "Incorrect reason for multi-sentence '. .': {}",
-                reason
-            );
-        } else if result_part2_multi.is_ok() {
-            panic!(
-                "Part 2 (multi-sentence '. .') expected Err, got Ok. Doc: {:?}",
-                doc_part2_multi
-            );
-        } else {
-            panic!("Part 2 (multi-sentence '. .') expected DocumentFiltered error, got different error: {:?}", result_part2_multi.err());
-        }
-
-        // Test with a document that is ONLY "."
-        let doc_part2_single = create_test_doc("punc_only_sentence_fail_single", ".");
-        let result_part2_single = filter_part2.process(doc_part2_single.clone()).await;
-        assert!(result_part2_single.is_err(), "Part 2 (single '.'): Document with only '.' sentence should fail if min_words=1. Actual: {:?}", result_part2_single.as_ref().map(|_| "Ok").unwrap_or("Err"));
-        if let Err(PipelineError::DocumentFiltered { ref reason, .. }) = result_part2_single {
-            assert!(
-                reason.contains("Too few words in sentence: \".\" (found 0, required 1)"),
-                "Incorrect reason for single '.': {}",
-                reason
-            );
-        } else if result_part2_single.is_ok() {
-            panic!(
-                "Part 2 (single '.') expected Err, got Ok. Doc: {:?}",
-                doc_part2_single
-            );
-        } else {
-            panic!(
-                "Part 2 (single '.') expected DocumentFiltered error, got different error: {:?}",
-                result_part2_single.err()
-            );
-        }
     }
 }

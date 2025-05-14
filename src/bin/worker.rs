@@ -173,9 +173,16 @@ fn build_pipeline_from_config(config: &PipelineConfig) -> Result<Vec<Box<dyn Pro
             StepConfig::C4QualityFilter(params) => {
                 debug!(params = ?params, "Adding C4QualityFilter");
                 Box::new(C4QualityFilter::new(
-                    params.min_sentences,
-                    params.min_words_per_sentence,
+                    params.split_paragraph,
+                    params.remove_citations,
+                    params.filter_no_terminal_punct,
+                    params.min_num_sentences,
+                    params.min_words_per_line,
                     params.max_word_length,
+                    params.filter_lorem_ipsum,
+                    params.filter_javascript,
+                    params.filter_curly_bracket,
+                    params.filter_policy,
                 ))
             }
             StepConfig::GopherRepetitionFilter(params) => {

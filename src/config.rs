@@ -50,9 +50,16 @@ impl StepConfig {
 /// Parameters for the C4QualityFilter.
 #[derive(Deserialize, Debug, Clone)]
 pub struct C4QualityParams {
-    pub min_sentences: usize,
-    pub min_words_per_sentence: usize,
+    pub split_paragraph: bool,
+    pub remove_citations: bool,
+    pub filter_no_terminal_punct: bool,
+    pub min_num_sentences: usize,
+    pub min_words_per_line: usize,
     pub max_word_length: usize,
+    pub filter_lorem_ipsum: bool,
+    pub filter_javascript: bool,
+    pub filter_curly_bracket: bool,
+    pub filter_policy: bool,
 }
 
 /// Parameters for the GopherRepetitionFilter.
@@ -134,9 +141,16 @@ mod tests {
         let yaml_content = r#"
 pipeline:
   - type: C4QualityFilter
-    min_sentences: 5
-    min_words_per_sentence: 3
-    max_word_length: 1000
+    split_paragraph: false
+    remove_citations: true
+    filter_no_terminal_punct: true
+    min_num_sentences: 5
+    min_words_per_line: 3
+    max_word_length: 15
+    filter_lorem_ipsum: true
+    filter_javascript: true
+    filter_curly_bracket: true
+    filter_policy: true
   - type: GopherRepetitionFilter
     dup_line_frac: 0.20
     top_n_grams: [[2, 0.2], [3, 0.18]]
@@ -153,7 +167,7 @@ pipeline:
         assert_eq!(config.pipeline.len(), 2);
         match &config.pipeline[0] {
             StepConfig::C4QualityFilter(params) => {
-                assert_eq!(params.min_sentences, 5);
+                assert_eq!(params.min_num_sentences, 5);
             }
             _ => panic!("Expected C4QualityFilter"),
         }
