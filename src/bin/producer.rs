@@ -2,6 +2,7 @@
 
 use clap::Parser;
 use futures::StreamExt; // For consuming the results stream
+use indicatif::{HumanDuration, ProgressBar, ProgressStyle}; // Added indicatif
 use lapin::{
     options::{BasicAckOptions, BasicConsumeOptions, BasicPublishOptions, QueueDeclareOptions},
     protocol::basic::AMQPProperties,
@@ -11,7 +12,6 @@ use lapin::{
 use serde_json;
 use std::time::{Duration, Instant}; // Added Instant
 use tokio::time::sleep;
-use indicatif::{ProgressBar, ProgressStyle, HumanDuration}; // Added indicatif
 use tracing::{error, info, warn}; // Added tracing
 use tracing_subscriber::{fmt, EnvFilter}; // Added tracing_subscriber
 use TextBlaster::config::ParquetInputConfig;
@@ -66,51 +66,73 @@ struct Args {
 // --- Prometheus Metrics ---
 use once_cell::sync::Lazy; // Using once_cell as it's already a dependency
 use prometheus::{
-    register_counter, register_gauge, register_histogram, Counter, Encoder, Gauge, Histogram, TextEncoder,
+    register_counter, register_gauge, register_histogram, Counter, Encoder, Gauge, Histogram,
+    TextEncoder,
 };
 
 static TASKS_PUBLISHED_TOTAL: Lazy<Counter> = Lazy::new(|| {
-    register_counter!("producer_tasks_published_total", "Total number of tasks published.")
-        .expect("Failed to register TASKS_PUBLISHED_TOTAL counter")
+    register_counter!(
+        "producer_tasks_published_total",
+        "Total number of tasks published."
+    )
+    .expect("Failed to register TASKS_PUBLISHED_TOTAL counter")
 });
 
 static TASK_PUBLISH_ERRORS_TOTAL: Lazy<Counter> = Lazy::new(|| {
-    register_counter!("producer_task_publish_errors_total", "Total number of errors during task publishing (serialization, broker ack).")
-        .expect("Failed to register TASK_PUBLISH_ERRORS_TOTAL counter")
+    register_counter!(
+        "producer_task_publish_errors_total",
+        "Total number of errors during task publishing (serialization, broker ack)."
+    )
+    .expect("Failed to register TASK_PUBLISH_ERRORS_TOTAL counter")
 });
 
 static RESULTS_RECEIVED_TOTAL: Lazy<Counter> = Lazy::new(|| {
-    register_counter!("producer_results_received_total", "Total number of results/outcomes received.")
-        .expect("Failed to register RESULTS_RECEIVED_TOTAL counter")
+    register_counter!(
+        "producer_results_received_total",
+        "Total number of results/outcomes received."
+    )
+    .expect("Failed to register RESULTS_RECEIVED_TOTAL counter")
 });
 
 static RESULTS_SUCCESS_TOTAL: Lazy<Counter> = Lazy::new(|| {
-    register_counter!("producer_results_success_total", "Total number of successful results.")
-        .expect("Failed to register RESULTS_SUCCESS_TOTAL counter")
+    register_counter!(
+        "producer_results_success_total",
+        "Total number of successful results."
+    )
+    .expect("Failed to register RESULTS_SUCCESS_TOTAL counter")
 });
 
 static RESULTS_FILTERED_TOTAL: Lazy<Counter> = Lazy::new(|| {
-    register_counter!("producer_results_filtered_total", "Total number of filtered results.")
-        .expect("Failed to register RESULTS_FILTERED_TOTAL counter")
+    register_counter!(
+        "producer_results_filtered_total",
+        "Total number of filtered results."
+    )
+    .expect("Failed to register RESULTS_FILTERED_TOTAL counter")
 });
 
 static RESULT_DESERIALIZATION_ERRORS_TOTAL: Lazy<Counter> = Lazy::new(|| {
-    register_counter!("producer_result_deserialization_errors_total", "Total number of errors deserializing results.")
-        .expect("Failed to register RESULT_DESERIALIZATION_ERRORS_TOTAL counter")
+    register_counter!(
+        "producer_result_deserialization_errors_total",
+        "Total number of errors deserializing results."
+    )
+    .expect("Failed to register RESULT_DESERIALIZATION_ERRORS_TOTAL counter")
 });
 
 static ACTIVE_TASKS_IN_FLIGHT: Lazy<Gauge> = Lazy::new(|| {
-    register_gauge!("producer_active_tasks_in_flight", "Number of tasks published but not yet resolved.")
-        .expect("Failed to register ACTIVE_TASKS_IN_FLIGHT gauge")
+    register_gauge!(
+        "producer_active_tasks_in_flight",
+        "Number of tasks published but not yet resolved."
+    )
+    .expect("Failed to register ACTIVE_TASKS_IN_FLIGHT gauge")
 });
 
 static TASK_PUBLISHING_DURATION_SECONDS: Lazy<Histogram> = Lazy::new(|| {
     register_histogram!(
         "producer_task_publishing_duration_seconds",
         "Histogram of task publishing latencies (from send to broker ack)."
-    ).expect("Failed to register TASK_PUBLISHING_DURATION_SECONDS histogram")
+    )
+    .expect("Failed to register TASK_PUBLISHING_DURATION_SECONDS histogram")
 });
-
 
 // Axum handler for /metrics
 async fn metrics_handler() -> (axum::http::StatusCode, String) {
@@ -118,13 +140,19 @@ async fn metrics_handler() -> (axum::http::StatusCode, String) {
     let mut buffer = vec![];
     if let Err(e) = encoder.encode(&prometheus::gather(), &mut buffer) {
         error!("Could not encode prometheus metrics: {}", e); // Changed to error!
-        return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, format!("Could not encode prometheus metrics: {}", e));
+        return (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Could not encode prometheus metrics: {}", e),
+        );
     }
     match String::from_utf8(buffer) {
         Ok(s) => (axum::http::StatusCode::OK, s),
         Err(e) => {
             error!("Prometheus metrics UTF-8 error: {}", e); // Changed to error!
-            (axum::http::StatusCode::INTERNAL_SERVER_ERROR, format!("Prometheus metrics UTF-8 error: {}", e))
+            (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Prometheus metrics UTF-8 error: {}", e),
+            )
         }
     }
 }
@@ -163,7 +191,8 @@ async fn connect_rabbitmq(addr: &str) -> LapinResult<Connection> {
 
 // Helper function for creating a styled progress bar
 fn create_progress_bar(total_items: u64, message: &str, template: &str) -> ProgressBar {
-    let pb = if total_items == 0 { // Spinner if total is unknown (or 0)
+    let pb = if total_items == 0 {
+        // Spinner if total is unknown (or 0)
         ProgressBar::new_spinner()
     } else {
         ProgressBar::new(total_items)
@@ -184,15 +213,17 @@ async fn main() -> Result<()> {
     let args = Args::parse();
 
     // Initialize tracing subscriber
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info")); // Default to info if RUST_LOG is not set
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")); // Default to info if RUST_LOG is not set
     fmt::Subscriber::builder().with_env_filter(filter).init();
 
     // --- Optional: Start Metrics Endpoint ---
     if let Some(port) = args.metrics_port {
         let app = axum::Router::new().route("/metrics", axum::routing::get(metrics_handler));
         let listener_addr = format!("0.0.0.0:{}", port);
-        info!("Metrics endpoint will be available at http://{}/metrics", listener_addr);
+        info!(
+            "Metrics endpoint will be available at http://{}/metrics",
+            listener_addr
+        );
 
         tokio::spawn(async move {
             match tokio::net::TcpListener::bind(&listener_addr).await {
@@ -242,7 +273,8 @@ async fn main() -> Result<()> {
 
     // 4. Read documents and publish to the task queue
     info!("Reading documents and publishing tasks..."); // This was already info!
-    let publishing_pb_template = "{spinner:.green} [{elapsed_precise}] {msg} Tasks published: {pos} ({per_sec}, ETA: {eta})";
+    let publishing_pb_template =
+        "{spinner:.green} [{elapsed_precise}] {msg} Tasks published: {pos} ({per_sec}, ETA: {eta})";
     let publishing_pb = create_progress_bar(0, "Publishing tasks", publishing_pb_template); // 0 for spinner
 
     let mut published_count = 0u64; // Use u64 for potentially large counts
@@ -288,7 +320,8 @@ async fn main() -> Result<()> {
                                     error = %e,
                                     "FATAL: Failed broker confirmation for task. Stopping."
                                 );
-                                publishing_pb.finish_with_message(format!("Publishing failed: {}", e));
+                                publishing_pb
+                                    .finish_with_message(format!("Publishing failed: {}", e));
                                 return Err(PipelineError::QueueError(format!(
                                     "Publish confirmation failed: {}",
                                     e
@@ -316,16 +349,17 @@ async fn main() -> Result<()> {
     let publishing_duration = publish_start_time.elapsed();
     publishing_pb.finish_with_message(format!(
         "Finished publishing {} tasks in {}. Read/Serialization Errors: {}",
-        published_count, HumanDuration(publishing_duration), read_errors
+        published_count,
+        HumanDuration(publishing_duration),
+        read_errors
     ));
-
 
     // Early exit if no tasks were published (nothing to wait for)
     if published_count == 0 {
         info!("No tasks were published. Exiting."); // This was already info!
-        // Close channel/connection before exiting
-        // let _ = publish_channel.close(200, "No tasks published").await;
-        // let _ = conn.close(200, "No tasks published").await;
+                                                    // Close channel/connection before exiting
+                                                    // let _ = publish_channel.close(200, "No tasks published").await;
+                                                    // let _ = conn.close(200, "No tasks published").await;
         return Ok(());
     }
 
@@ -379,15 +413,19 @@ async fn main() -> Result<()> {
         )
         .await?;
 
-    info!( // This was already info!
+    info!(
+        // This was already info!
         "Waiting for outcomes from queue '{}'. Expecting {} outcomes (Success or Filtered).",
         args.results_queue, published_count
     );
 
     let aggregation_pb_template = "{spinner:.blue} [{elapsed_precise}] {msg} Results received: {pos}/{len} ({percent}%) ({per_sec}, ETA: {eta})";
-    let aggregation_pb = create_progress_bar(published_count, "Aggregating results", aggregation_pb_template);
+    let aggregation_pb = create_progress_bar(
+        published_count,
+        "Aggregating results",
+        aggregation_pb_template,
+    );
     let aggregation_start_time = Instant::now();
-
 
     // Loop until we have received an outcome for every task published
     while outcomes_received_count < published_count {
@@ -396,7 +434,9 @@ async fn main() -> Result<()> {
 
         if delivery_result.is_none() {
             // Stream closed unexpectedly (e.g., connection lost)
-            aggregation_pb.println("ERROR: Consumer stream closed unexpectedly before receiving all outcomes.");
+            aggregation_pb.println(
+                "ERROR: Consumer stream closed unexpectedly before receiving all outcomes.",
+            );
             break; // Exit the loop
         }
 
@@ -429,8 +469,10 @@ async fn main() -> Result<()> {
                                             // Consider metric for Parquet write errors
                                             aggregation_pb.println(format!("FATAL: Failed to write Parquet batch: {}. Stopping.", e));
                                             let _ = delivery.ack(BasicAckOptions::default()).await;
-                                            aggregation_pb.finish_with_message("Aggregation failed due to Parquet write error.");
-                                            break; 
+                                            aggregation_pb.finish_with_message(
+                                                "Aggregation failed due to Parquet write error.",
+                                            );
+                                            break;
                                         }
                                     }
                                 }
@@ -457,11 +499,11 @@ async fn main() -> Result<()> {
                                             aggregation_pb.println(format!("FATAL: Failed to write Filtered Parquet batch: {}. Stopping.", e));
                                             let _ = delivery.ack(BasicAckOptions::default()).await;
                                             aggregation_pb.finish_with_message("Aggregation failed due to Parquet write error (filtered).");
-                                            break; 
+                                            break;
                                         }
                                     }
                                 }
-                            } 
+                            }
                         }
                     }
                     Err(e) => {
@@ -469,7 +511,7 @@ async fn main() -> Result<()> {
                         RESULT_DESERIALIZATION_ERRORS_TOTAL.inc();
                         // It's an outcome, so decrement in-flight tasks even if we can't parse it.
                         // Otherwise, the in-flight count will be wrong if poison pills occur.
-                        ACTIVE_TASKS_IN_FLIGHT.dec(); 
+                        ACTIVE_TASKS_IN_FLIGHT.dec();
                         aggregation_pb.println(format!(
                             "Failed to deserialize outcome message {}: {}. Payload: {:?}",
                             delivery.delivery_tag,
@@ -492,15 +534,18 @@ async fn main() -> Result<()> {
                     "Error receiving outcome message from consumer stream: {}",
                     e
                 ));
-                aggregation_pb.finish_with_message("Aggregation failed due to consumer stream error.");
-                break; 
+                aggregation_pb
+                    .finish_with_message("Aggregation failed due to consumer stream error.");
+                break;
             }
         }
     }
     let aggregation_duration = aggregation_start_time.elapsed();
     aggregation_pb.finish_with_message(format!(
         "Finished consuming outcomes (Received {}/{} expected) in {}.",
-        outcomes_received_count, published_count, HumanDuration(aggregation_duration)
+        outcomes_received_count,
+        published_count,
+        HumanDuration(aggregation_duration)
     ));
 
     // 8. Write any remaining documents in the final batch

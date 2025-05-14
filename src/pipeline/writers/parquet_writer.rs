@@ -1,17 +1,16 @@
 use std::fs::File;
 // use std::path::Path; // {{ Remove this unused import }}
-use std::sync::Arc;
 use arrow::array::{ArrayRef, RecordBatch, StringArray};
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use parquet::arrow::arrow_writer::ArrowWriter;
 use parquet::file::properties::WriterProperties;
-use serde_json; // For serializing metadata
+use serde_json;
+use std::sync::Arc; // For serializing metadata
 
 // Assuming your error module and Result type are defined like this
 // Adjust the import path if necessary
-use crate::error::Result;
 use crate::data_model::TextDocument;
-
+use crate::error::Result;
 
 // Define the schema for TextDocument
 fn create_schema() -> SchemaRef {
@@ -58,9 +57,9 @@ impl ParquetWriter {
         }
 
         if self.writer.is_none() {
-             // Handle error: writer was already closed or failed to initialize
-             // You might want a more specific error type here
-             return Err(std::io::Error::new(std::io::ErrorKind::Other, "Writer is closed").into());
+            // Handle error: writer was already closed or failed to initialize
+            // You might want a more specific error type here
+            return Err(std::io::Error::new(std::io::ErrorKind::Other, "Writer is closed").into());
         }
 
         // 1. Convert TextDocuments to Arrow Arrays
@@ -125,7 +124,6 @@ impl ParquetWriter {
 //          }
 //     }
 // }
-
 
 // --- Example Usage (Remove or place in tests/main.rs) ---
 /*

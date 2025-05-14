@@ -109,7 +109,7 @@ impl ProcessingStep for C4QualityFilter {
         } else {
             // Sentence splitting logic would go here if implemented
             // For now, we'll stick to line splitting as the primary mode
-            split_into_sentences(&document.content)// Default to lines for now
+            split_into_sentences(&document.content) // Default to lines for now
         };
 
         let mut kept_lines: Vec<String> = Vec::new();
@@ -147,20 +147,26 @@ impl ProcessingStep for C4QualityFilter {
                 current_line
             };
 
-            { // Start a new scope for borrows
+            {
+                // Start a new scope for borrows
                 let line_l = processed_line.to_lowercase();
                 let words = split_into_words(&processed_line);
 
                 // max_word_length filter
-                if self.max_word_length > 0 && words.iter().any(|w| w.chars().count() > self.max_word_length) {
+                if self.max_word_length > 0
+                    && words
+                        .iter()
+                        .any(|w| w.chars().count() > self.max_word_length)
+                {
                     continue; // Drop line
                 }
 
                 // end punctuation
                 if self.filter_no_terminal_punct {
-                    let ends_with_terminal_punct = processed_line.chars().last().map_or(false, |last_char| {
-                        END_PUNCTUATION.contains(&last_char)
-                    });
+                    let ends_with_terminal_punct = processed_line
+                        .chars()
+                        .last()
+                        .map_or(false, |last_char| END_PUNCTUATION.contains(&last_char));
                     let ends_with_ellipsis = processed_line.ends_with(ELLIPSIS);
 
                     if !ends_with_terminal_punct || ends_with_ellipsis {
@@ -292,7 +298,11 @@ mod tests {
         let doc_content = "This line is fine.\nTwo words.\nAnother good line. This is the fourth sentence. And the fifth sentence. Here is the sixth.";
         let doc = create_test_doc("fail_line_words", doc_content);
         let result = filter.process(doc).await;
-        assert!(result.is_ok(), "Document should pass after dropping line: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Document should pass after dropping line: {:?}",
+            result.err()
+        );
         let processed_doc = result.unwrap();
         // The line "Two words." should be dropped
         assert_eq!(processed_doc.content.trim(), "This line is fine.\nAnother good line. This is the fourth sentence. And the fifth sentence. Here is the sixth.");
@@ -308,7 +318,11 @@ mod tests {
         let doc_content = "This line is fine.\nThis one is not\nAnd this is okay. Here is another sentence. And a fifth one. This is the sixth sentence.";
         let doc = create_test_doc("fail_line_punc", doc_content);
         let result = filter.process(doc).await;
-        assert!(result.is_ok(), "Document should pass after dropping line: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Document should pass after dropping line: {:?}",
+            result.err()
+        );
         let processed_doc = result.unwrap();
         // The line "This one is not" should be dropped
         assert_eq!(processed_doc.content.trim(), "This line is fine.\nAnd this is okay. Here is another sentence. And a fifth one. This is the sixth sentence.");
@@ -324,7 +338,11 @@ mod tests {
         let doc_content = "This line is fine.\nThis one ends with ellipsis...\nAnd this is okay. This is the fourth sentence. And the fifth sentence. Here is the sixth.";
         let doc = create_test_doc("fail_line_ellipsis", doc_content);
         let result = filter.process(doc).await;
-        assert!(result.is_ok(), "Document should pass after dropping line: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Document should pass after dropping line: {:?}",
+            result.err()
+        );
         let processed_doc = result.unwrap();
         // The line "This one ends with ellipsis..." should be dropped
         assert_eq!(processed_doc.content.trim(), "This line is fine.\nAnd this is okay. This is the fourth sentence. And the fifth sentence. Here is the sixth.");
@@ -334,7 +352,6 @@ mod tests {
         );
     }
 
-
     #[tokio::test]
     async fn test_word_too_long() {
         let filter = default_filter(); // max_word_length = 1000
@@ -342,7 +359,11 @@ mod tests {
         let doc_content = format!("This line is fine.\nA line with a verylongword {}.\nAnother good line. This is the fourth sentence. And the fifth sentence. Here is the sixth.", long_word);
         let doc = create_test_doc("fail_word_length", &doc_content);
         let result = filter.process(doc).await;
-        assert!(result.is_ok(), "Document should pass after dropping line: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Document should pass after dropping line: {:?}",
+            result.err()
+        );
         let processed_doc = result.unwrap();
         // The line with the long word should be dropped
         assert_eq!(processed_doc.content.trim(), "This line is fine.\nAnother good line. This is the fourth sentence. And the fifth sentence. Here is the sixth.");
@@ -372,7 +393,11 @@ mod tests {
         let doc_content = "This is fine.\nSome javascript code here.\nAnother good line. This is the fourth sentence. And the fifth sentence. Here is the sixth.";
         let doc = create_test_doc("fail_javascript", doc_content);
         let result = filter.process(doc).await;
-        assert!(result.is_ok(), "Document should pass after dropping line: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Document should pass after dropping line: {:?}",
+            result.err()
+        );
         let processed_doc = result.unwrap();
         // The line with "javascript" should be dropped
         assert_eq!(processed_doc.content.trim(), "This is fine.\nAnother good line. This is the fourth sentence. And the fifth sentence. Here is the sixth.");
@@ -402,7 +427,11 @@ mod tests {
         let doc_content = "This is fine.\nRead our privacy policy.\nAnother good line. This is the fourth sentence. And the fifth sentence. Here is the sixth.";
         let doc = create_test_doc("fail_policy", doc_content);
         let result = filter.process(doc).await;
-        assert!(result.is_ok(), "Document should pass after dropping line: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Document should pass after dropping line: {:?}",
+            result.err()
+        );
         let processed_doc = result.unwrap();
         // The line with "privacy policy" should be dropped
         assert_eq!(processed_doc.content.trim(), "This is fine.\nAnother good line. This is the fourth sentence. And the fifth sentence. Here is the sixth.");
@@ -418,7 +447,11 @@ mod tests {
         let doc_content = "This is text [1]. Another sentence [2, 3]. Final text [45]. Here is the fourth sentence. And the fifth sentence. This is the sixth sentence.";
         let doc = create_test_doc("remove_citations", doc_content);
         let result = filter.process(doc).await;
-        assert!(result.is_ok(), "Document should pass after removing citations: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Document should pass after removing citations: {:?}",
+            result.err()
+        );
         let processed_doc = result.unwrap();
         // Citations should be removed
         assert_eq!(processed_doc.content.trim(), "This is text . Another sentence . Final text . Here is the fourth sentence. And the fifth sentence. This is the sixth sentence.");
@@ -458,12 +491,12 @@ mod tests {
     #[tokio::test]
     async fn test_zero_min_values_pass_minimal_doc() {
         let filter = C4QualityFilter::new(
-            true, // split_paragraph
+            true,  // split_paragraph
             false, // remove_citations
             false, // filter_no_terminal_punct
-            0,    // min_num_sentences
-            0,    // min_words_per_line
-            0, // max_word_length (0 means no limit in this context)
+            0,     // min_num_sentences
+            0,     // min_words_per_line
+            0,     // max_word_length (0 means no limit in this context)
             false, // filter_lorem_ipsum
             false, // filter_javascript
             false, // filter_curly_bracket

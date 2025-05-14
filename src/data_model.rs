@@ -20,7 +20,10 @@ pub enum ProcessingOutcome {
     /// The document was successfully processed through all pipeline steps.
     Success(TextDocument),
     /// The document was filtered out by one of the pipeline steps.
-    Filtered { document: TextDocument, reason: String },
+    Filtered {
+        document: TextDocument,
+        reason: String,
+    },
     // Potential future extension:
     // Error { id: String, error_details: String },
 }

@@ -65,7 +65,7 @@ pub fn split_into_sentences(text: &str) -> Vec<&str> {
     }
 
     let segmenter = SentenceSegmenter::new(); // Assuming Danish - adjust locale as needed
-    // Perform segmentation on the already trimmed text
+                                              // Perform segmentation on the already trimmed text
     let start_indices: Vec<usize> = segmenter.segment_str(trimmed_text).collect();
 
     // If the segmenter returns no start indices for a non-empty trimmed string,
@@ -81,11 +81,11 @@ pub fn split_into_sentences(text: &str) -> Vec<&str> {
         // Determine the end of the current sentence based on the next start index
         // or the end of the (trimmed) input string.
         let end = if i + 1 < start_indices.len() {
-            start_indices[i+1]
+            start_indices[i + 1]
         } else {
-            trimmed_text.len() 
+            trimmed_text.len()
         };
-        
+
         // Ensure the slice is valid against trimmed_text.
         // start_indices are relative to trimmed_text.
         if start <= end && end <= trimmed_text.len() {
@@ -118,37 +118,84 @@ mod tests {
 
     #[test]
     fn test_split_sentences_empty_and_simple() {
-        assert_eq!(split_into_sentences(""), Vec::new() as Vec<&str>, "Test empty string");
-        assert_eq!(split_into_sentences("   "), Vec::new() as Vec<&str>, "Test string with only spaces");
-        
+        assert_eq!(
+            split_into_sentences(""),
+            Vec::new() as Vec<&str>,
+            "Test empty string"
+        );
+        assert_eq!(
+            split_into_sentences("   "),
+            Vec::new() as Vec<&str>,
+            "Test string with only spaces"
+        );
+
         // This is the previously failing assertion. With the fix, it should pass.
-        assert_eq!(split_into_sentences("Hello world."), vec!["Hello world."], "Test single sentence with period");
-        
-        assert_eq!(split_into_sentences("  Hello world.  "), vec!["Hello world."], "Test single sentence with period and surrounding spaces");
-        assert_eq!(split_into_sentences("Dette er en sætning."), vec!["Dette er en sætning."], "Test Danish single sentence with period");
-        assert_eq!(split_into_sentences("SingleWord"), vec!["SingleWord"], "Test single word, no punctuation");
-        assert_eq!(split_into_sentences("  SingleWord  "), vec!["SingleWord"], "Test single word, no punctuation, with spaces");
+        assert_eq!(
+            split_into_sentences("Hello world."),
+            vec!["Hello world."],
+            "Test single sentence with period"
+        );
+
+        assert_eq!(
+            split_into_sentences("  Hello world.  "),
+            vec!["Hello world."],
+            "Test single sentence with period and surrounding spaces"
+        );
+        assert_eq!(
+            split_into_sentences("Dette er en sætning."),
+            vec!["Dette er en sætning."],
+            "Test Danish single sentence with period"
+        );
+        assert_eq!(
+            split_into_sentences("SingleWord"),
+            vec!["SingleWord"],
+            "Test single word, no punctuation"
+        );
+        assert_eq!(
+            split_into_sentences("  SingleWord  "),
+            vec!["SingleWord"],
+            "Test single word, no punctuation, with spaces"
+        );
     }
 
     #[test]
     fn test_split_sentences_multiple() {
         let text = "Første sætning. Anden sætning! Tredje sætning?";
         let expected = vec!["Første sætning.", "Anden sætning!", "Tredje sætning?"];
-        assert_eq!(split_into_sentences(text), expected, "Test multiple sentences standard");
+        assert_eq!(
+            split_into_sentences(text),
+            expected,
+            "Test multiple sentences standard"
+        );
 
         let text_with_spaces = "  Første sætning.   Anden sætning!  Tredje sætning?  ";
-        assert_eq!(split_into_sentences(text_with_spaces), expected, "Test multiple sentences with varied spacing");
+        assert_eq!(
+            split_into_sentences(text_with_spaces),
+            expected,
+            "Test multiple sentences with varied spacing"
+        );
 
         let text_mixed_punc = " Hello. How are you? Fine! ";
-        assert_eq!(split_into_sentences(text_mixed_punc), vec!["Hello.", "How are you?", "Fine!"], "Test mixed punctuation with surrounding spaces");
+        assert_eq!(
+            split_into_sentences(text_mixed_punc),
+            vec!["Hello.", "How are you?", "Fine!"],
+            "Test mixed punctuation with surrounding spaces"
+        );
 
         let text_no_final_punc = "This is a sentence. This is another";
-        assert_eq!(split_into_sentences(text_no_final_punc), vec!["This is a sentence.", "This is another"], "Test multiple sentences, last one no punctuation");
-        
-        let text_no_final_punc_spaced = "  This is a sentence.   This is another  ";
-        assert_eq!(split_into_sentences(text_no_final_punc_spaced), vec!["This is a sentence.", "This is another"], "Test multiple sentences, last one no punctuation, with spaces");
-    }
+        assert_eq!(
+            split_into_sentences(text_no_final_punc),
+            vec!["This is a sentence.", "This is another"],
+            "Test multiple sentences, last one no punctuation"
+        );
 
+        let text_no_final_punc_spaced = "  This is a sentence.   This is another  ";
+        assert_eq!(
+            split_into_sentences(text_no_final_punc_spaced),
+            vec!["This is a sentence.", "This is another"],
+            "Test multiple sentences, last one no punctuation, with spaces"
+        );
+    }
 
     #[test]
     fn test_split_words_empty_and_simple() {
@@ -160,7 +207,10 @@ mod tests {
     #[test]
     fn test_split_words_with_punctuation() {
         assert_eq!(split_into_words("hello, world!"), vec!["hello", "world"]);
-        assert_eq!(split_into_words("first. second; third?"), vec!["first", "second", "third"]);
+        assert_eq!(
+            split_into_words("first. second; third?"),
+            vec!["first", "second", "third"]
+        );
         assert_eq!(split_into_words("...leading"), vec!["leading"]); // Based on is_word_like
         assert_eq!(split_into_words("trailing..."), vec!["trailing"]);
         // For "mid...dle", WordSegmenter with is_word_like() filter:
@@ -231,12 +281,12 @@ mod tests {
         // For now, I'll test based on the *intended* behavior of `split_into_words`.
         // These tests might fail or highlight issues with the current implementation.
         assert_eq!(split_into_words("mid...dle"), vec!["mid", "dle"]); // Expected: "mid", "dle"
-                                                                      // Current code (if it compiled & worked as described for sentences):
-                                                                      // "mid...dle" -> segments "mid" (word), "..." (not word), "dle" (word)
-                                                                      // Filtered starts: idx_mid, idx_dle
-                                                                      // tuple_windows: (idx_mid, idx_dle)
-                                                                      // slice: text[idx_mid .. idx_dle] -> "mid..." -- incorrect.
-                                                                      // So this test will likely fail.
+                                                                       // Current code (if it compiled & worked as described for sentences):
+                                                                       // "mid...dle" -> segments "mid" (word), "..." (not word), "dle" (word)
+                                                                       // Filtered starts: idx_mid, idx_dle
+                                                                       // tuple_windows: (idx_mid, idx_dle)
+                                                                       // slice: text[idx_mid .. idx_dle] -> "mid..." -- incorrect.
+                                                                       // So this test will likely fail.
     }
 
     #[test]
