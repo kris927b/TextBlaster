@@ -219,7 +219,7 @@ When writing to the output Parquet file, the `metadata` field is serialized to a
 
 Contributions are welcome! Please feel free to submit pull requests or open issues for bugs, feature requests, or improvements.
 
-<!-- TODO: Add more specific contribution guidelines if needed -->
+For contribution guidelines, please see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 

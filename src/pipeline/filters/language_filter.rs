@@ -29,7 +29,7 @@ impl ProcessingStep for LanguageDetectionFilter {
         let mut document = document;
         let text = &document.content;
 
-        let lang_detect = detect(&text).unwrap();
+        let lang_detect = detect(text).unwrap();
         let lang: Lang = lang_detect.lang();
         let confidence = lang_detect.confidence();
 
@@ -46,19 +46,13 @@ impl ProcessingStep for LanguageDetectionFilter {
                 "Document is not any of the following languages: {}",
                 self.allowed_languages.join("; ")
             );
-            Err(PipelineError::DocumentFiltered {
-                document: document,
-                reason: reason,
-            })
+            Err(PipelineError::DocumentFiltered { document, reason })
         } else if confidence < self.min_confidence {
             let reason = format!(
                 "Language detection confidence is not satified: {} < {}",
                 confidence, self.min_confidence
             );
-            Err(PipelineError::DocumentFiltered {
-                document: document,
-                reason: reason,
-            })
+            Err(PipelineError::DocumentFiltered { document, reason })
         } else {
             Ok(document)
         }

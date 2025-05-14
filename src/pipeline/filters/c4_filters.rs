@@ -34,7 +34,7 @@ lazy_static! {
 /// - We removed any line with the word Javascript.
 /// - We removed any page where the phrase “lorem ipsum” appeared
 /// - We removed any pages that contained a curly bracket
-/// Additional filters not mentioned on the list from the paper but on the code:
+///   Additional filters not mentioned on the list from the paper but on the code:
 /// - Remove lines with one word over 1000 chars
 /// - Remove lines with cookies and terms of use keywords
 /// - Remove wikipedia style citations from the text
@@ -166,7 +166,7 @@ impl ProcessingStep for C4QualityFilter {
                     let ends_with_terminal_punct = processed_line
                         .chars()
                         .last()
-                        .map_or(false, |last_char| END_PUNCTUATION.contains(&last_char));
+                        .is_some_and(|last_char| END_PUNCTUATION.contains(&last_char));
                     let ends_with_ellipsis = processed_line.ends_with(ELLIPSIS);
 
                     if !ends_with_terminal_punct || ends_with_ellipsis {

@@ -27,8 +27,7 @@ use lapin::{
 use TextBlaster::pipeline::filters::{
     C4QualityFilter, GopherQualityFilter, GopherRepetitionFilter, LanguageDetectionFilter,
 };
-// If GopherQualityFilter uses it
-use serde_json;
+
 use std::path::PathBuf;
 use std::sync::Arc; // To share the executor across potential concurrent tasks
 use std::time::Duration;

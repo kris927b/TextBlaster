@@ -8,10 +8,9 @@ use arrow::array::{Array, StringArray};
 use arrow::datatypes::DataType;
 use arrow::record_batch::RecordBatchReader; // Renamed from `arrow::record_batch::RecordBatch` which is a struct
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
-use std::fs::File;
-use std::collections::HashMap; // Needed for metadata
-// use std::sync::Arc; // Use Arc for shared ownership where needed by Arrow/Parquet APIs
-
+use std::collections::HashMap;
+use std::fs::File; // Needed for metadata
+                   // use std::sync::Arc; // Use Arc for shared ownership where needed by Arrow/Parquet APIs
 
 /// Reads TextDocuments from a Parquet file.
 #[derive(Debug)]
@@ -92,7 +91,6 @@ impl ParquetReader {
             }
         };
 
-
         let text_column_name_outer = self.config.text_column.clone();
         let id_column_name_outer = self.config.id_column.clone();
         let config_path_outer = self.config.path.clone();
@@ -135,7 +133,7 @@ impl ParquetReader {
                              (Ok(texts), Ok(ids_opt), Ok(metadata_opt)) => {
                                 let num_rows = batch.num_rows();
                                 let source_path_for_rows = config_path.clone();
-                                
+
                                 (0..num_rows)
                                     .map(move |i| {
                                         let source_path = source_path_for_rows.clone(); // Cloned for this row

@@ -9,7 +9,6 @@ use lapin::{
     types::FieldTable,
     Connection, ConnectionProperties, Result as LapinResult,
 };
-use serde_json;
 use std::time::{Duration, Instant}; // Added Instant
 use tokio::time::sleep;
 use tracing::{error, info, warn}; // Added tracing
