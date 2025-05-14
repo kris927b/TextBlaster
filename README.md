@@ -82,7 +82,29 @@ Configuration is primarily handled via command-line arguments for both the `prod
 *   **Producer:** Specify input/output paths, column names, and RabbitMQ details.
 *   **Worker:** Specify RabbitMQ details and queue names.
 
-**Pipeline Steps:** The sequence of processing steps applied by the worker is currently defined within the `build_pipeline` function in `src/bin/worker.rs`. To customize the pipeline (add, remove, or reorder steps, or change filter parameters), you will need to modify this function and recompile.
+**Pipeline Configuration:** The sequence of processing steps applied by the worker is defined in the `config/pipeline_config.yaml` file. This allows for dynamic configuration of the pipeline without recompiling the worker binary.
+
+The `pipeline_config.yaml` file specifies a list of processing steps to be executed in order. Each step is defined by its `type` and any necessary `parameters`.
+
+Example `pipeline_config.yaml`:
+
+```yaml
+steps:
+  - type: C4QualityFilter
+    parameters:
+      min_sentences: 3
+      min_words_per_sentence: 5
+      max_word_length: 100
+      must_end_with_punct: true
+  - type: GopherRepetitionFilter
+    parameters:
+      # ... gopher repetition parameters ...
+  - type: LanguageDetectionFilter
+    parameters:
+      languages: ["en"]
+```
+
+To customize the pipeline, modify the `config/pipeline_config.yaml` file to add, remove, reorder steps, or change filter parameters.
 
 **Input Parquet Config:** The `ParquetInputConfig` struct (`src/config.rs`) defines how the producer reads the input Parquet file (path, column names, batch size). These values are passed via CLI arguments to the producer.
 
