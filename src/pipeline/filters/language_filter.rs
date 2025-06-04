@@ -63,15 +63,19 @@ impl ProcessingStep for LanguageDetectionFilter {
 mod tests {
     use super::*;
     use crate::data_model::TextDocument;
-    use whatlang::Lang;
+
+    fn create_test_doc(id: &str, content: &str) -> TextDocument {
+        TextDocument {
+            id: id.to_string(),
+            source: "rep_test_source".to_string(),
+            content: content.to_string(),
+            metadata: Default::default(),
+        }
+    }
 
     #[tokio::test]
     async fn test_allowed_language() {
-        let document = TextDocument::new(
-            "doc1",
-            "This is a test document in English.",
-            Default::default(),
-        );
+        let document = create_test_doc("doc1", "Sometimes, all you need to start the day right is a good coffee and someone greeting you smiling.");
         let filter = LanguageDetectionFilter::new(0.8, vec!["eng".to_string()]);
         let result = filter.process(document).await;
 
@@ -96,17 +100,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_disallowed_language() {
-        let document = TextDocument::new(
-            "doc2",
-            "Ceci est un document de test en français.", // French
-            Default::default(),
-        );
+        let document = create_test_doc("doc2", "Ceci est un document de test en français.");
         let filter = LanguageDetectionFilter::new(0.8, vec!["eng".to_string()]); // Only allow English
         let result = filter.process(document).await;
 
         assert!(result.is_err());
         match result.err().unwrap() {
-            PipelineError::DocumentFiltered { document: _, reason } => {
+            PipelineError::DocumentFiltered {
+                document: _,
+                reason,
+            } => {
                 assert!(reason.contains("Document is not any of the following languages: eng"));
             }
             _ => panic!("Expected DocumentFiltered error"),
@@ -116,14 +119,17 @@ mod tests {
     #[tokio::test]
     async fn test_confident_but_disallowed_language() {
         // "Hola Mundo" is Spanish and should be detected with high confidence.
-        let document = TextDocument::new("doc4", "Hola Mundo", Default::default());
+        let document = create_test_doc("doc3", "Hola Mundo");
         // Allow only English, with a standard confidence threshold.
         let filter = LanguageDetectionFilter::new(0.8, vec!["eng".to_string()]);
         let result = filter.process(document).await;
 
         assert!(result.is_err());
         match result.err().unwrap() {
-            PipelineError::DocumentFiltered { document: _, reason } => {
+            PipelineError::DocumentFiltered {
+                document: _,
+                reason,
+            } => {
                 // The primary reason for filtering should be the language not being allowed,
                 // even if confidence would have been sufficient.
                 assert!(
@@ -141,48 +147,27 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_low_confidence() {
-        // Short, ambiguous text is likely to have low confidence.
-        // "text text" is detected as English by whatlang, but often with low confidence.
-        let document = TextDocument::new("doc3", "text text", Default::default());
-        // Allow English, but require very high confidence.
-        let filter = LanguageDetectionFilter::new(0.99, vec!["eng".to_string()]);
-        let result = filter.process(document).await;
-
-        assert!(result.is_err());
-        match result.err().unwrap() {
-            PipelineError::DocumentFiltered { document: _, reason } => {
-                // We need to check if the reason string contains the confidence message.
-                // The exact confidence value can vary, so we check for the general format.
-                assert!(
-                    reason.contains("Language detection confidence is not satified"),
-                    "Unexpected reason: {}",
-                    reason
-                );
-            }
-            _ => panic!("Expected DocumentFiltered error"),
-        }
-    }
-
-    #[tokio::test]
     async fn test_allowed_language_low_confidence() {
         // "a b c" is English, but very short, likely leading to low confidence.
-        let document = TextDocument::new("doc5", "a b c", Default::default());
+        let document = create_test_doc("doc5", "text arrives out of thin air");
         // Allow English, but require a very high confidence that "a b c" won't meet.
         let filter = LanguageDetectionFilter::new(0.99, vec!["eng".to_string()]);
         let result = filter.process(document).await;
 
         assert!(result.is_err());
         match result.err().unwrap() {
-            PipelineError::DocumentFiltered { document: processed_doc, reason } => {
+            PipelineError::DocumentFiltered {
+                document: processed_doc,
+                reason,
+            } => {
                 assert_eq!(processed_doc.id, "doc5"); // Ensure the correct document is returned
-                // Check that the detected language was indeed English (or whatever whatlang detects for "a b c")
-                // and that the reason is low confidence.
+                                                      // Check that the detected language was indeed English (or whatever whatlang detects for "a b c")
+                                                      // and that the reason is low confidence.
                 assert!(
                     processed_doc.metadata.get("Detected language").is_some(),
                     "Detected language should be in metadata even if filtered for low confidence"
                 );
-                 // whatlang detects "a b c" as English.
+                // whatlang detects "a b c" as English.
                 assert_eq!(
                     processed_doc.metadata.get("Detected language"),
                     Some(&"English".into())
