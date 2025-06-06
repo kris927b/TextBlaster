@@ -7,6 +7,7 @@ edition = "2021"
 arrow = "54.3.1"
 parquet = { version = "54.3.1", features = ["arrow"] }
 rayon = "1.10.0"
+reqwest = { version = "0.11", features = ["blocking", "json", "rustls-tls"], default-features = false }
 rnltk = "0.4.0"
 serde = { version = "1.0.219", features = ["derive"] }
 thiserror = "2.0.12"
