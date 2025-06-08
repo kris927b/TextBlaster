@@ -27,6 +27,7 @@ prometheus = { version = "0.13", features = ["process"] }
 lazy_static = "1.4" # Or use once_cell which is already present
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+rand = "0.8" # Added rand dependency
 # {{ Add dependencies needed for producer/worker (some might be added later) }}
 # redis = { version = "0.25", features = ["tokio-comp"] } # Example: Redis client
 

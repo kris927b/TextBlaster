@@ -25,7 +25,8 @@ use lapin::{
     Result as LapinResult,
 };
 use TextBlaster::pipeline::filters::{
-    C4QualityFilter, GopherQualityFilter, GopherRepetitionFilter, LanguageDetectionFilter,
+    C4BadWordsFilter, C4QualityFilter, GopherQualityFilter, GopherRepetitionFilter,
+    LanguageDetectionFilter,
 };
 
 use std::path::PathBuf;
@@ -240,7 +241,11 @@ fn build_pipeline_from_config(config: &PipelineConfig) -> Result<Vec<Box<dyn Pro
                     params.min_confidence,
                     params.allowed_languages.clone(),
                 ))
-            } // Add cases for other StepConfig variants here if you define more
+            }
+            StepConfig::C4BadWordsFilter(params) => {
+                debug!(params = ?params, "Adding C4BadWordsFilter");
+                Box::new(C4BadWordsFilter::new(params.clone()))
+            }
         };
         steps.push(step);
         info!("Added step: {}", step_config.name());
