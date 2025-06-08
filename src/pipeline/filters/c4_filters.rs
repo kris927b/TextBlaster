@@ -1,3 +1,4 @@
+use crate::config::C4BadWordsParams;
 use crate::data_model::TextDocument;
 use crate::error::{PipelineError, Result};
 use crate::executor::ProcessingStep;
@@ -5,7 +6,14 @@ use crate::utils::text::{split_into_sentences, split_into_words};
 
 use async_trait::async_trait;
 use lazy_static::lazy_static;
+use rand::rngs::StdRng;
+use rand::{Rng, SeedableRng};
 use regex::Regex;
+use reqwest::blocking::Client; // For HTTP client
+use std::collections::HashMap;
+use std::fs::{self}; // Added fs::File
+use std::path::PathBuf; // Added Path, PathBuf
+use std::sync::Mutex; // Added Mutex for interior mutability
 
 // Constants based on C4 and reference implementation
 const END_PUNCTUATION: [char; 4] = ['.', '!', '?', '"'];
@@ -25,6 +33,42 @@ lazy_static! {
     // Simple regex for Wikipedia-style citations like [1], [2, 3], [45]
     static ref CITATION_REGEX: Regex = Regex::new(r"\[\d+(?:,\s*\d+)*\]").expect("Invalid regex");
 }
+
+const _EN_BADWORDS_URL: &str = "https://raw.githubusercontent.com/LDNOOBW/List-of-Dirty-Naughty-Obscene-and-Otherwise-Bad-Words/25e679f03d96baa721cde20db9944649e8d0a844/en";
+const _BADWORDS_URL: &str = "https://raw.githubusercontent.com/LDNOOBW/List-of-Dirty-Naughty-Obscene-and-Otherwise-Bad-Words/5faf2ba42d7b1c0977169ec3611df25a3c08eb13/";
+const _BADWORDS_LANGS: &[&str] = &[
+    "ar",
+    "cs",
+    "da",
+    "de",
+    "en",
+    "eo",
+    "es",
+    "fa",
+    "fi",
+    "fil",
+    "fr",
+    "fr-CA-u-sd-caqc",
+    "hi",
+    "hu",
+    "it",
+    "ja",
+    "kab",
+    "ko",
+    "nl",
+    "no",
+    "pl",
+    "pt",
+    "ru",
+    "sv",
+    "th",
+    "tlh",
+    "tr",
+    "zh",
+];
+
+// Also, it might be useful to have the CJK languages for regex rule changes later.
+const _CJK_LANGS: &[&str] = &["ja", "th", "zh"];
 
 /// Applies heuristic rules from C4 https://jmlr.org/papers/volume21/20-074/20-074.pdf
 ///
@@ -230,11 +274,262 @@ impl ProcessingStep for C4QualityFilter {
     }
 }
 
+pub struct C4BadWordsFilter {
+    params: C4BadWordsParams,
+    badwords_regex_map: Mutex<HashMap<String, Regex>>, // Wrapped in Mutex
+    rng: Mutex<StdRng>,                                // Wrapped in Mutex
+}
+
+impl C4BadWordsFilter {
+    pub fn new(params: C4BadWordsParams) -> Self {
+        let rng = match params.seed {
+            Some(seed_val) => StdRng::seed_from_u64(seed_val),
+            None => StdRng::from_entropy(), // Or StdRng::from_rng(thread_rng()).unwrap() for a different approach
+        };
+        C4BadWordsFilter {
+            params,
+            badwords_regex_map: Mutex::new(HashMap::new()),
+            rng: Mutex::new(rng),
+        }
+    }
+
+    // Helper method to get or compile badwords regex for a language
+    fn _get_badwords(&self, lang: &str) -> Result<Option<Regex>> {
+        let mut map = self.badwords_regex_map.lock().unwrap(); // Acquire lock
+        if map.contains_key(lang) {
+            return Ok(map.get(lang).cloned()); // Return cloned Regex
+        }
+
+        if !_BADWORDS_LANGS.contains(&lang) {
+            if self.params.fail_on_missing_language {
+                return Err(PipelineError::StepError {
+                    step_name: self.name().to_string(),
+                    source: Box::new(PipelineError::Unexpected(format!(
+                        "There is no badwords list available for '{}'. Set fail_on_missing_language=False to continue anyway.",
+                        lang
+                    ))),
+                });
+            } else {
+                // self.stat_update("missing_badwords_lang", f"missing_badwords_lang_{lang}"); // Placeholder
+                return Ok(None); // No list, not failing, so effectively pass.
+            }
+        }
+
+        let cache_dir = PathBuf::from("data").join("c4_badwords");
+        let cache_file_path = cache_dir.join(lang);
+
+        let words_content: String;
+
+        if cache_file_path.exists() {
+            words_content =
+                fs::read_to_string(&cache_file_path).map_err(|e| PipelineError::StepError {
+                    step_name: self.name().to_string(),
+                    source: Box::new(PipelineError::IoError { source: e }),
+                })?;
+        } else {
+            // File not in cache, download it
+            fs::create_dir_all(&cache_dir).map_err(|e| PipelineError::StepError {
+                step_name: self.name().to_string(),
+                source: Box::new(PipelineError::IoError { source: e }),
+            })?;
+
+            let url = if lang == "en" {
+                _EN_BADWORDS_URL.to_string()
+            } else {
+                format!("{}{}", _BADWORDS_URL, lang)
+            };
+
+            let client = Client::builder()
+                .build()
+                .map_err(|e| PipelineError::StepError {
+                    step_name: self.name().to_string(),
+                    source: Box::new(PipelineError::Unexpected(format!(
+                        "Failed to build HTTP client: {}",
+                        e
+                    ))),
+                })?;
+
+            let response = client
+                .get(&url)
+                .send()
+                .map_err(|e| PipelineError::StepError {
+                    step_name: self.name().to_string(),
+                    source: Box::new(PipelineError::Unexpected(format!(
+                        "Failed to download badwords for lang '{}' from '{}': {}",
+                        lang, url, e
+                    ))),
+                })?;
+
+            if !response.status().is_success() {
+                return Err(PipelineError::StepError {
+                    step_name: self.name().to_string(),
+                    source: Box::new(PipelineError::Unexpected(format!(
+                        "Failed to download badwords for lang '{}' from '{}'. Status: {}",
+                        lang,
+                        url,
+                        response.status()
+                    ))),
+                });
+            }
+
+            words_content = response.text().map_err(|e| PipelineError::StepError {
+                step_name: self.name().to_string(),
+                source: Box::new(PipelineError::Unexpected(format!(
+                    "Failed to read response text for lang '{}' from '{}': {}",
+                    lang, url, e
+                ))),
+            })?;
+
+            fs::write(&cache_file_path, &words_content).map_err(|e| PipelineError::StepError {
+                step_name: self.name().to_string(),
+                source: Box::new(PipelineError::IoError { source: e }),
+            })?;
+        }
+
+        let badwords_list: Vec<String> = words_content
+            .lines()
+            .map(|line| line.trim().to_string())
+            .filter(|line| !line.is_empty())
+            .collect();
+
+        if badwords_list.is_empty() {
+            // If the list is empty (e.g. an empty file was downloaded or read)
+            // Treat as if no list was available, but don't fail if fail_on_missing_language is false.
+            // This avoids compiling an empty regex like "()", which might behave unexpectedly.
+            // Log this? For now, act like Ok(None).
+            return Ok(None);
+        }
+
+        // TODO: Implement allowlist logic if needed in the future.
+        // For now, directly use badwords_list.
+
+        let escaped_words: Vec<String> = badwords_list.iter().map(|w| regex::escape(w)).collect();
+
+        let pattern_str = if _CJK_LANGS.contains(&lang) {
+            // For Japanese, Thai, and Chinese, do not require word separations.
+            format!(r"(?i)({})", escaped_words.join("|")) // Case-insensitive
+        } else {
+            // For other languages, match only when flanked by non-word chars or start/end of string.
+            format!(r"(?i)(?:\W|^)({})(?:\W|$)", escaped_words.join("|")) // Case-insensitive
+        };
+
+        match Regex::new(&pattern_str) {
+            Ok(re) => {
+                map.insert(lang.to_string(), re.clone()); // Insert clone
+                Ok(Some(re)) // Return owned Regex
+            }
+            Err(e) => Err(PipelineError::StepError {
+                step_name: self.name().to_string(),
+                source: Box::new(PipelineError::Unexpected(format!(
+                    "Failed to compile regex for lang '{}': {}",
+                    lang, e
+                ))),
+            }),
+        }
+    }
+}
+
+#[async_trait]
+impl ProcessingStep for C4BadWordsFilter {
+    fn name(&self) -> &'static str {
+        "C4BadWordsFilter"
+    }
+
+    async fn process(&self, mut document: TextDocument) -> Result<TextDocument> {
+        let lang = document
+            .metadata
+            .get("language")
+            .map(|s| s.as_str())
+            .unwrap_or_else(|| self.params.default_language.as_str());
+
+        let badwords_regex_option = match self._get_badwords(lang) {
+            Ok(re_opt) => re_opt,
+            Err(e) => {
+                // If _get_badwords returns an error (e.g. fail_on_missing_language=true)
+                // We need to convert it to a DocumentFiltered error.
+                // The original error reason from _get_badwords can be used.
+                let reason = match e {
+                    PipelineError::StepError { source, .. } => match *source {
+                        PipelineError::Unexpected(r) => r,
+                        PipelineError::IoError { source: io_err } => {
+                            format!("I/O error: {}", io_err)
+                        }
+                        _ => format!("Failed to get badwords for language '{}'", lang),
+                    },
+                    _ => format!("Failed to get badwords for language '{}'", lang),
+                };
+                document.metadata.insert(
+                    "c4_badwords_filter_status".to_string(),
+                    "filtered".to_string(),
+                );
+                document
+                    .metadata
+                    .insert("c4_badwords_filter_reason".to_string(), reason.clone());
+                return Err(PipelineError::DocumentFiltered { document, reason });
+            }
+        };
+
+        if badwords_regex_option.is_none() {
+            // No regex available, but fail_on_missing_language was false.
+            // Or, the language was 'xx' but something went wrong in placeholder logic.
+            // self.stat_update("missing_badwords_lang", f"missing_badwords_lang_{lang}"); // Placeholder
+            document.metadata.insert(
+                "c4_badwords_filter_status".to_string(),
+                "passed_no_regex".to_string(), // Or "passed_missing_lang_list"
+            );
+            return Ok(document);
+        }
+
+        let badwords_regex = badwords_regex_option.unwrap(); // Safe due to check above
+
+        // Search for bad words (case-insensitive already handled by regex pattern in _get_badwords if (?i) is used)
+        // The Python code uses doc.text.lower(), but Rust regex can be case-insensitive.
+        // Assuming the regex compiled in _get_badwords will handle case insensitivity.
+        if badwords_regex.is_match(&document.content) {
+            // self.stat_update("documents_with_badwords", f"documents_with_badwords_{lang}"); // Placeholder
+
+            if self.params.keep_fraction > 0.0
+                && self.rng.lock().unwrap().gen::<f32>() < self.params.keep_fraction
+            {
+                // self.stat_update("document_kept_with_badwords", f"document_kept_with_badwords_{lang}"); // Placeholder
+                document.metadata.insert(
+                    "c4_badwords_filter_status".to_string(),
+                    "passed_kept_by_fraction".to_string(),
+                );
+                Ok(document)
+            } else {
+                // self.stat_update(f"document_removed_with_badwords_{lang}"); // Placeholder
+                let reason = "document_removed_with_badwords".to_string();
+                document.metadata.insert(
+                    "c4_badwords_filter_status".to_string(),
+                    "filtered".to_string(),
+                );
+                document
+                    .metadata
+                    .insert("c4_badwords_filter_reason".to_string(), reason.clone());
+                Err(PipelineError::DocumentFiltered { document, reason })
+            }
+        } else {
+            // No bad words found
+            document.metadata.insert(
+                "c4_badwords_filter_status".to_string(),
+                "passed".to_string(),
+            );
+            Ok(document)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::C4BadWordsParams;
     use crate::data_model::TextDocument;
+    use crate::error::PipelineError;
     use std::collections::HashMap;
+    use std::fs::{self, File}; // Ensure fs and File are imported
+    use std::io::Write; // Ensure Write is imported
+    use std::path::PathBuf; // Ensure PathBuf is imported
 
     // Helper to create a TextDocument for tests
     fn create_test_doc(id: &str, content: &str) -> TextDocument {
@@ -509,5 +804,254 @@ mod tests {
             "Document should pass with zero min values: {:?}",
             result.err()
         );
+    }
+
+    fn setup_dummy_badwords_file(lang: &str, content: &str) {
+        let cache_dir = PathBuf::from("data").join("c4_badwords");
+        fs::create_dir_all(&cache_dir).expect("Failed to create dummy cache dir for test");
+        let file_path = cache_dir.join(lang);
+        let mut file =
+            File::create(&file_path).expect("Failed to create dummy badwords file for test");
+        writeln!(file, "{}", content).expect("Failed to write to dummy badwords file");
+    }
+
+    fn cleanup_dummy_badwords_file(lang: &str) {
+        let cache_dir = PathBuf::from("data").join("c4_badwords");
+        let file_path = cache_dir.join(lang);
+        if file_path.exists() {
+            fs::remove_file(&file_path).expect("Failed to remove dummy badwords file");
+        }
+        // Optionally remove cache_dir if empty, but be cautious
+        // For now, just remove the file.
+    }
+
+    // Helper to create C4BadWordsParams for tests
+    fn badwords_params(
+        keep_fraction: f32,
+        fail_on_missing_language: bool,
+        seed: Option<u64>,
+        default_language: &str,
+    ) -> C4BadWordsParams {
+        C4BadWordsParams {
+            keep_fraction,
+            fail_on_missing_language,
+            seed,
+            default_language: default_language.to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_badwords_document_passes_no_badwords() {
+        let lang_for_test = "en";
+        setup_dummy_badwords_file(lang_for_test, "dummybadword\nexactphrase");
+
+        let params = badwords_params(0.0, true, Some(123), "en");
+        let filter = C4BadWordsFilter::new(params);
+        let doc = create_test_doc("bw_pass_nobadwords", "This is a clean sentence.");
+        let mut doc_with_lang = doc.clone();
+        doc_with_lang
+            .metadata
+            .insert("language".to_string(), lang_for_test.to_string());
+
+        let result = filter.process(doc_with_lang).await;
+        assert!(result.is_ok(), "Document should pass: {:?}", result.err());
+        let processed_doc = result.unwrap();
+        assert_eq!(
+            processed_doc.metadata.get("c4_badwords_filter_status"),
+            Some(&"passed".to_string())
+        );
+        cleanup_dummy_badwords_file(lang_for_test);
+    }
+
+    #[tokio::test]
+    async fn test_badwords_document_filtered_has_badwords() {
+        let lang_for_test = "en";
+        setup_dummy_badwords_file(lang_for_test, "dummybadword\nexactphrase");
+
+        let params = badwords_params(0.0, true, Some(123), "xx"); // default_language can be anything if lang is set
+        let filter = C4BadWordsFilter::new(params);
+        let doc = create_test_doc(
+            "bw_filter_hasbadwords",
+            "This sentence contains a dummybadword here.",
+        );
+        let mut doc_with_lang = doc.clone();
+        doc_with_lang
+            .metadata
+            .insert("language".to_string(), lang_for_test.to_string());
+
+        let result = filter.process(doc_with_lang).await;
+        assert!(result.is_err(), "Document should be filtered");
+        if let Err(PipelineError::DocumentFiltered {
+            reason,
+            document: filtered_doc,
+        }) = result
+        {
+            assert_eq!(reason, "document_removed_with_badwords");
+            assert_eq!(
+                filtered_doc.metadata.get("c4_badwords_filter_status"),
+                Some(&"filtered".to_string())
+            );
+        } else {
+            panic!(
+                "Expected DocumentFiltered error, got different error or Ok. Result: {:?}",
+                result
+            );
+        }
+        cleanup_dummy_badwords_file(lang_for_test);
+    }
+
+    #[tokio::test]
+    async fn test_badwords_keep_fraction_keeps_doc() {
+        let lang_for_test = "en";
+        setup_dummy_badwords_file(lang_for_test, "dummybadword\nexactphrase");
+
+        let params = badwords_params(1.0, true, Some(123), "en"); // keep_fraction = 1.0
+        let filter = C4BadWordsFilter::new(params);
+        let doc = create_test_doc("bw_keep_fraction", "Another dummybadword sentence.");
+        let mut doc_with_lang = doc.clone();
+        doc_with_lang
+            .metadata
+            .insert("language".to_string(), lang_for_test.to_string());
+
+        let result = filter.process(doc_with_lang).await;
+        assert!(
+            result.is_ok(),
+            "Document should be kept by keep_fraction: {:?}",
+            result.err()
+        );
+        let processed_doc = result.unwrap();
+        assert_eq!(
+            processed_doc.metadata.get("c4_badwords_filter_status"),
+            Some(&"passed_kept_by_fraction".to_string())
+        );
+        cleanup_dummy_badwords_file(lang_for_test);
+    }
+
+    #[tokio::test]
+    async fn test_badwords_keep_fraction_filters_doc() {
+        let lang_for_test = "en";
+        setup_dummy_badwords_file(lang_for_test, "dummybadword\nexactphrase");
+
+        let params = badwords_params(0.0, true, Some(123), "en"); // keep_fraction = 0.0
+        let filter = C4BadWordsFilter::new(params);
+        let doc = create_test_doc("bw_filter_fraction_zero", "A sentence with dummybadword.");
+        let mut doc_with_lang = doc.clone();
+        doc_with_lang
+            .metadata
+            .insert("language".to_string(), lang_for_test.to_string());
+
+        let result = filter.process(doc_with_lang).await;
+        assert!(
+            result.is_err(),
+            "Document should be filtered with keep_fraction=0.0"
+        );
+        if let Err(PipelineError::DocumentFiltered { reason, .. }) = result {
+            assert_eq!(reason, "document_removed_with_badwords");
+        } else {
+            panic!("Expected DocumentFiltered error. Result: {:?}", result);
+        }
+        cleanup_dummy_badwords_file(lang_for_test);
+    }
+
+    #[tokio::test]
+    async fn test_badwords_missing_language_fail() {
+        let params = badwords_params(0.0, true, Some(123), "en"); // fail_on_missing_language = true
+        let filter = C4BadWordsFilter::new(params);
+        // Using "zz" for which no badword list is set up (it's not in _BADWORDS_LANGS)
+        let doc = create_test_doc("bw_missing_lang_fail", "Some text.");
+        let mut doc_with_lang = doc.clone();
+        doc_with_lang
+            .metadata
+            .insert("language".to_string(), "zz".to_string());
+
+        let result = filter.process(doc_with_lang).await;
+        assert!(
+            result.is_err(),
+            "Should fail due to missing language and fail_on_missing_language=true"
+        );
+        if let Err(PipelineError::DocumentFiltered { reason, .. }) = result {
+            assert!(
+                reason.contains("There is no badwords list available for 'zz'"),
+                "Unexpected reason: {}",
+                reason
+            );
+        } else {
+            panic!(
+                "Expected DocumentFiltered error for missing language. Result: {:?}",
+                result
+            );
+        }
+        // No cleanup needed as no file should have been created for "zz"
+    }
+
+    #[tokio::test]
+    async fn test_badwords_missing_language_pass() {
+        let params = badwords_params(0.0, false, Some(123), "en"); // fail_on_missing_language = false
+        let filter = C4BadWordsFilter::new(params);
+        let doc = create_test_doc("bw_missing_lang_pass", "Some text.");
+        let mut doc_with_lang = doc.clone();
+        doc_with_lang
+            .metadata
+            .insert("language".to_string(), "zz".to_string()); // "zz" has no list and is not in _BADWORDS_LANGS
+
+        let result = filter.process(doc_with_lang).await;
+        assert!(
+            result.is_ok(),
+            "Should pass due to fail_on_missing_language=false: {:?}",
+            result.err()
+        );
+        let processed_doc = result.unwrap();
+        assert_eq!(
+            processed_doc.metadata.get("c4_badwords_filter_status"),
+            Some(&"passed_no_regex".to_string())
+        );
+        // No cleanup needed
+    }
+
+    #[tokio::test]
+    async fn test_badwords_default_language_used() {
+        let default_lang_for_test = "de";
+        setup_dummy_badwords_file(default_lang_for_test, "germanbadword");
+        // "de" is in _BADWORDS_LANGS, so it will proceed to try and load the file.
+        let params = badwords_params(0.0, true, Some(123), default_lang_for_test);
+        let filter = C4BadWordsFilter::new(params);
+        let doc = create_test_doc("bw_default_lang", "Text with germanbadword.");
+
+        let result = filter.process(doc).await;
+        assert!(
+            result.is_err(),
+            "Should be filtered based on default language '{}'",
+            default_lang_for_test
+        );
+        if let Err(PipelineError::DocumentFiltered { reason, .. }) = result {
+            assert_eq!(reason, "document_removed_with_badwords");
+        } else {
+            panic!("Expected DocumentFiltered error. Result: {:?}", result);
+        }
+        cleanup_dummy_badwords_file(default_lang_for_test);
+    }
+
+    #[tokio::test]
+    async fn test_badwords_default_language_clean() {
+        let default_lang_for_test = "de";
+        setup_dummy_badwords_file(default_lang_for_test, "germanbadword");
+
+        let params = badwords_params(0.0, true, Some(123), default_lang_for_test);
+        let filter = C4BadWordsFilter::new(params);
+        let doc = create_test_doc("bw_default_lang_clean", "Clean text for default lang.");
+
+        let result = filter.process(doc).await;
+        assert!(
+            result.is_ok(),
+            "Should pass with default language '{}': {:?}",
+            default_lang_for_test,
+            result.err()
+        );
+        let processed_doc = result.unwrap();
+        assert_eq!(
+            processed_doc.metadata.get("c4_badwords_filter_status"),
+            Some(&"passed".to_string())
+        );
+        cleanup_dummy_badwords_file(default_lang_for_test);
     }
 }

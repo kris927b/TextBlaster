@@ -7,6 +7,7 @@ edition = "2021"
 arrow = "54.3.1"
 parquet = { version = "54.3.1", features = ["arrow"] }
 rayon = "1.10.0"
+reqwest = { version = "0.11", features = ["blocking", "json", "rustls-tls"], default-features = false }
 rnltk = "0.4.0"
 serde = { version = "1.0.219", features = ["derive"] }
 thiserror = "2.0.12"
@@ -26,6 +27,7 @@ prometheus = { version = "0.13", features = ["process"] }
 lazy_static = "1.4" # Or use once_cell which is already present
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+rand = "0.8" # Added rand dependency
 # {{ Add dependencies needed for producer/worker (some might be added later) }}
 # redis = { version = "0.25", features = ["tokio-comp"] } # Example: Redis client
 
