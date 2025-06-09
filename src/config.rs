@@ -32,6 +32,7 @@ pub enum StepConfig {
     GopherQualityFilter(GopherQualityParams),
     C4BadWordsFilter(C4BadWordsParams), // New
     LanguageDetectionFilter(LanguageDetectionParams),
+    FineWebQualityFilter(FineWebQualityFilterImplParams), // Renamed and new params struct
     // Add other filter/step types here as needed
 }
 
@@ -44,6 +45,7 @@ impl StepConfig {
             StepConfig::GopherQualityFilter(_) => "GopherQualityFilter",
             StepConfig::C4BadWordsFilter(_) => "C4BadWordsFilter", // New
             StepConfig::LanguageDetectionFilter(_) => "LanguageDetectionFilter",
+            StepConfig::FineWebQualityFilter(_) => "FineWebQualityFilter", // Renamed
             // Add cases for other StepConfig variants here
         }
     }
@@ -109,6 +111,27 @@ pub struct C4BadWordsParams {
 pub struct LanguageDetectionParams {
     pub min_confidence: f64,
     pub allowed_languages: Vec<String>,
+}
+
+// Parameters for the FineWebQualityFilterImpl (new filter based on Python logic).
+#[derive(Deserialize, Debug, Clone, Default)] // Added Default for easier construction in worker
+pub struct FineWebQualityFilterImplParams {
+    #[serde(default)] // Ensure that if the key is missing, it uses Option::None
+    pub line_punct_thr: Option<f64>,
+    #[serde(default)]
+    pub line_punct_exclude_zero: Option<bool>,
+    #[serde(default)]
+    pub stop_chars: Option<Vec<String>>, // Will be converted to HashSet<char> in setup
+    #[serde(default)]
+    pub short_line_thr: Option<f64>,
+    #[serde(default)]
+    pub short_line_length: Option<usize>, // serde will handle u64 -> usize if value fits
+    #[serde(default)]
+    pub char_duplicates_ratio: Option<f64>,
+    #[serde(default)]
+    pub new_line_ratio: Option<f64>,
+    #[serde(default)]
+    pub language: Option<String>,
 }
 
 // {{ Add the new function to load pipeline configuration }}

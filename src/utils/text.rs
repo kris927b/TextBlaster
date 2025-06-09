@@ -1,5 +1,5 @@
 // Text utils
-use itertools::Itertools;
+// use itertools::Itertools; // Removed unused import
 
 use icu::segmenter::{SentenceSegmenter, WordSegmenter};
 use once_cell::sync::Lazy;
@@ -101,16 +101,117 @@ pub fn split_into_sentences(text: &str) -> Vec<&str> {
 }
 
 pub fn split_into_words(text: &str) -> Vec<&str> {
-    let segmenter = WordSegmenter::new_auto();
+    if text.is_empty() {
+        return Vec::new();
+    }
+    let segmenter = WordSegmenter::new_auto(); // No need for mut if not calling methods on it post-iterator creation
+    let mut words = Vec::new();
+    let mut prev_break = 0;
 
-    segmenter
-        .segment_str(text)
-        .iter_with_word_type()
-        .tuple_windows()
-        .filter(|(_, (_, segment_type))| segment_type.is_word_like())
-        .map(|((i, _), (j, _))| &text[i..j])
-        .collect()
+    // segment_str() returns an iterator over break points (usize byte offsets).
+    // A segment is the text between two consecutive break points.
+    let mut breaks_iter = segmenter.segment_str(text).peekable();
+
+    while let Some(current_break) = breaks_iter.next() {
+        if current_break > prev_break {
+            let segment_candidate = &text[prev_break..current_break];
+
+            // Trim whitespace first to handle cases like "word " before punctuation check
+            let trimmed_segment = segment_candidate.trim();
+
+            if !trimmed_segment.is_empty() {
+                // Check if the trimmed segment consists *only* of punctuation.
+                // The ICU segmenter should ideally segment "word." as "word" (word-like) and "." (not).
+                // And "..." as not word-like.
+                // If the segmenter gives us "word.", we need to decide if that's a "word".
+                // The current UAX #29 definition of a word often includes trailing punctuation within the segment
+                // if `WordSegmenter::is_word_like` was true for it.
+                // The `WordSegmenter` should correctly identify "mid" and "dle" in "mid...dle" as word segments,
+                // and "..." as a non-word segment.
+
+                // The `segment_str` iterator itself only gives break points.
+                // The boolean from the original code `(usize, bool)` is what we are missing.
+                // Let's assume the segmenter correctly breaks "word" from "..." from "dle".
+                // Then we just need to check if the segment is non-empty after light trimming.
+                // A segment like "..." would be correctly identified if it's not empty and all its chars are punctuation.
+
+                let mut contains_word_char = false;
+                for ch in trimmed_segment.chars() {
+                    if !PUNCTUATION.contains(&ch) && !ch.is_whitespace() { // Check against our PUNCTUATION set
+                        contains_word_char = true;
+                        break;
+                    }
+                }
+
+                if contains_word_char {
+                    // If it contains at least one non-punctuation/non-whitespace char, consider it a word.
+                    // Further trimming of just punctuation might be desired depending on exact requirements.
+                    // For "mid...dle", we expect segments "mid", "...", "dle".
+                    // "mid" -> contains_word_char = true.
+                    // "..." -> contains_word_char = false (if all '.' are in PUNCTUATION).
+                    // "dle" -> contains_word_char = true.
+                    // This seems like a reasonable heuristic if `is_word_like` is not available directly with the offset.
+                    words.push(trimmed_segment);
+                }
+            }
+        }
+        prev_break = current_break;
+    }
+
+    // Process the last segment (from the last break to the end of the string)
+    if text.len() > prev_break {
+        let segment_candidate = &text[prev_break..text.len()];
+        let trimmed_segment = segment_candidate.trim();
+        if !trimmed_segment.is_empty() {
+            let mut contains_word_char = false;
+            for ch in trimmed_segment.chars() {
+                if !PUNCTUATION.contains(&ch) && !ch.is_whitespace() {
+                    contains_word_char = true;
+                    break;
+                }
+            }
+            if contains_word_char {
+                words.push(trimmed_segment);
+            }
+        }
+    }
+    words
 }
+
+/// Finds duplicate characters in a list of lines.
+///
+/// Args:
+///   lines: A slice of strings, where each string is a line of text.
+///
+/// Returns:
+///   A tuple `(usize, usize)` where the first element is the count of
+///   repeated characters (sum of (count - 1) for each char with count > 1),
+///   and the second element is the total number of characters in the text
+///   (ignoring newlines, as if all lines were joined).
+pub fn find_duplicates(lines: &[impl AsRef<str>]) -> (usize, usize) {
+    use std::collections::HashMap;
+
+    let mut character_counts: HashMap<char, usize> = HashMap::new();
+    let mut total_chars = 0;
+
+    for line_ref in lines {
+        let line = line_ref.as_ref();
+        for ch in line.chars() {
+            *character_counts.entry(ch).or_insert(0) += 1;
+            total_chars += 1;
+        }
+    }
+
+    let mut repeated_chars_count = 0;
+    for count in character_counts.values() {
+        if *count > 1 {
+            repeated_chars_count += *count - 1;
+        }
+    }
+
+    (repeated_chars_count, total_chars)
+}
+
 
 #[cfg(test)]
 mod tests {

@@ -25,11 +25,11 @@ use lapin::{
     Result as LapinResult,
 };
 use TextBlaster::pipeline::filters::{
-    C4BadWordsFilter, C4QualityFilter, GopherQualityFilter, GopherRepetitionFilter,
-    LanguageDetectionFilter,
+    C4BadWordsFilter, C4QualityFilter, FineWebQualityFilterImpl, GopherQualityFilter, // Updated import
+    GopherRepetitionFilter, LanguageDetectionFilter,
 };
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc; // To share the executor across potential concurrent tasks
 use std::time::Duration;
 use tokio::time::sleep; // {{ Add serde_json for result serialization }}
@@ -245,6 +245,47 @@ fn build_pipeline_from_config(config: &PipelineConfig) -> Result<Vec<Box<dyn Pro
             StepConfig::C4BadWordsFilter(params) => {
                 debug!(params = ?params, "Adding C4BadWordsFilter");
                 Box::new(C4BadWordsFilter::new(params.clone()))
+            }
+            StepConfig::FineWebQualityFilter(params) => { // Updated variant name
+                debug!(params = ?params, "Adding FineWebQualityFilterImpl");
+
+                let mut config_map = serde_json::Map::new();
+                if let Some(val) = params.line_punct_thr {
+                    config_map.insert("line_punct_thr".to_string(), serde_json::json!(val));
+                }
+                if let Some(val) = params.line_punct_exclude_zero {
+                    config_map.insert("line_punct_exclude_zero".to_string(), serde_json::Value::Bool(val));
+                }
+                if let Some(ref val_vec) = params.stop_chars {
+                    let json_arr = val_vec.iter().map(|s| serde_json::Value::String(s.clone())).collect();
+                    config_map.insert("stop_chars".to_string(), serde_json::Value::Array(json_arr));
+                }
+                if let Some(val) = params.short_line_thr {
+                    config_map.insert("short_line_thr".to_string(), serde_json::json!(val));
+                }
+                if let Some(val) = params.short_line_length {
+                    config_map.insert("short_line_length".to_string(), serde_json::json!(val));
+                }
+                if let Some(val) = params.char_duplicates_ratio {
+                    config_map.insert("char_duplicates_ratio".to_string(), serde_json::json!(val));
+                }
+                if let Some(val) = params.new_line_ratio {
+                    config_map.insert("new_line_ratio".to_string(), serde_json::json!(val));
+                }
+                if let Some(ref val) = params.language {
+                    config_map.insert("language".to_string(), serde_json::Value::String(val.clone()));
+                }
+
+                let filter_config_value = if config_map.is_empty() {
+                    None
+                } else {
+                    Some(serde_json::Value::Object(config_map))
+                };
+
+                Box::new(
+                    FineWebQualityFilterImpl::setup(Path::new(""), filter_config_value.as_ref()) // Use new struct and setup
+                        .expect("Failed to setup FineWebQualityFilterImpl"),
+                )
             }
         };
         steps.push(step);
