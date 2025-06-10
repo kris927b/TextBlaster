@@ -5,10 +5,10 @@ use std::time::Duration;
 use tokio::time::sleep;
 use tracing::{error, info};
 
-use axum::{routing::get, Router, serve, http::StatusCode};
-use tokio::net::TcpListener;
-use prometheus::{Encoder, TextEncoder, gather};
-use crate::error::{PipelineError, Result}; // Assuming Result is crate::error::Result for PipelineError
+use crate::error::{PipelineError, Result};
+use axum::{http::StatusCode, routing::get, serve, Router};
+use prometheus::{gather, Encoder, TextEncoder};
+use tokio::net::TcpListener; // Assuming Result is crate::error::Result for PipelineError
 
 // Helper function to connect to RabbitMQ with retry (already here)
 pub async fn connect_rabbitmq(addr: &str) -> LapinResult<Connection> {
@@ -66,7 +66,7 @@ async fn metrics_handler() -> (StatusCode, String) {
 
 // Function to setup Prometheus metrics endpoint
 // This function is now public to be used by binaries.
-pub async fn setup_prometheus_metrics(metrics_port: Option<u16>) -> Result<(), PipelineError> {
+pub async fn setup_prometheus_metrics(metrics_port: Option<u16>) -> Result<()> {
     if let Some(port) = metrics_port {
         let app = Router::new().route("/metrics", get(metrics_handler));
         let listener_addr = format!("0.0.0.0:{}", port);

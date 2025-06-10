@@ -19,10 +19,9 @@ use TextBlaster::error::{PipelineError, Result}; // Use the library's Result typ
 use TextBlaster::pipeline::readers::ParquetReader;
 use TextBlaster::pipeline::writers::parquet_writer::ParquetWriter; // For retry delay
 use TextBlaster::utils::utils::{connect_rabbitmq, setup_prometheus_metrics}; // Updated for shared functions
-// axum and TcpListener imports removed as they are now in utils::utils
+                                                                             // axum and TcpListener imports removed as they are now in utils::utils
 use chrono::Utc; // For consumer tag in aggregate_results
 use TextBlaster::utils::prometheus_metrics::*; // Import shared metrics
-
 
 const PARQUET_WRITE_BATCH_SIZE: usize = 500; // Configurable batch size for writing
 
@@ -92,7 +91,7 @@ async fn publish_tasks(
     args: &Args,
     conn: &lapin::Connection,
     publishing_pb: &ProgressBar,
-) -> Result<u64, PipelineError> {
+) -> Result<u64> {
     let publish_channel = conn.create_channel().await?;
 
     // Declare the task queue (durable)
@@ -200,7 +199,7 @@ async fn aggregate_results(
     conn: &lapin::Connection,
     published_count: u64,
     aggregation_pb: &ProgressBar,
-) -> Result<(u64, u64, u64), PipelineError> {
+) -> Result<(u64, u64, u64)> {
     info!("\nStarting results aggregation phase...");
 
     let consume_channel = conn.create_channel().await?;
@@ -277,7 +276,10 @@ async fn aggregate_results(
                                     results_batch.clear();
                                 }
                             }
-                            ProcessingOutcome::Filtered { document, reason: _ } => {
+                            ProcessingOutcome::Filtered {
+                                document,
+                                reason: _,
+                            } => {
                                 filtered_count += 1;
                                 RESULTS_FILTERED_TOTAL.inc();
                                 excluded_batch.push(document);
@@ -290,7 +292,11 @@ async fn aggregate_results(
                                     excluded_batch.clear();
                                 }
                             }
-                            ProcessingOutcome::Error { document, error_message, worker_id } => {
+                            ProcessingOutcome::Error {
+                                document,
+                                error_message,
+                                worker_id,
+                            } => {
                                 error!(doc_id = %document.id, worker_id = %worker_id, error = %error_message, "Task processing failed");
                                 RESULTS_ERROR_TOTAL.inc();
                             }
@@ -316,7 +322,10 @@ async fn aggregate_results(
                 }
             }
             Some(Err(e)) => {
-                aggregation_pb.println(format!("Error receiving outcome: {}. Will attempt to finalize current results.", e));
+                aggregation_pb.println(format!(
+                    "Error receiving outcome: {}. Will attempt to finalize current results.",
+                    e
+                ));
                 break; // Exit loop on consumer error, then try to write remaining batches.
             }
             None => {
@@ -335,11 +344,17 @@ async fn aggregate_results(
     ));
 
     if !results_batch.is_empty() {
-        info!("Writing final batch of successfully processed documents ({} docs)...", results_batch.len());
+        info!(
+            "Writing final batch of successfully processed documents ({} docs)...",
+            results_batch.len()
+        );
         parquet_writer_output.write_batch(&results_batch)?;
     }
     if !excluded_batch.is_empty() {
-        info!("Writing final batch of excluded documents ({} docs)...", excluded_batch.len());
+        info!(
+            "Writing final batch of excluded documents ({} docs)...",
+            excluded_batch.len()
+        );
         parquet_writer_excluded.write_batch(&excluded_batch)?;
     }
 
@@ -412,19 +427,16 @@ async fn main() -> Result<()> {
     );
 
     // 3. Aggregate Results
-    let (
-        outcomes_received_count,
-        success_count,
-        filtered_count,
-    ) = match aggregate_results(&args, &conn, published_count, &aggregation_pb).await {
-        Ok(counts) => counts,
-        Err(e) => {
-            error!("Failed during result aggregation: {}", e);
-            aggregation_pb.finish_with_message(format!("Aggregation failed: {}", e));
-            // Optional: conn.close().await
-            return Err(e);
-        }
-    };
+    let (outcomes_received_count, success_count, filtered_count) =
+        match aggregate_results(&args, &conn, published_count, &aggregation_pb).await {
+            Ok(counts) => counts,
+            Err(e) => {
+                error!("Failed during result aggregation: {}", e);
+                aggregation_pb.finish_with_message(format!("Aggregation failed: {}", e));
+                // Optional: conn.close().await
+                return Err(e);
+            }
+        };
 
     // Final Summary
     info!("--------------------");

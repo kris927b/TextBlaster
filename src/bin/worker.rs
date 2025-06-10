@@ -28,8 +28,8 @@ use TextBlaster::pipeline::filters::{
     C4BadWordsFilter, C4QualityFilter, GopherQualityFilter, GopherRepetitionFilter,
     LanguageDetectionFilter,
 };
-use TextBlaster::utils::utils::{connect_rabbitmq, setup_prometheus_metrics}; // Using shared setup_prometheus_metrics
-use TextBlaster::utils::prometheus_metrics::*; // Import shared metrics
+use TextBlaster::utils::prometheus_metrics::*;
+use TextBlaster::utils::utils::{connect_rabbitmq, setup_prometheus_metrics}; // Using shared setup_prometheus_metrics // Import shared metrics
 
 use std::path::PathBuf;
 use std::sync::Arc; // To share the executor across potential concurrent tasks
@@ -154,7 +154,7 @@ async fn process_tasks(
     args: &Args,
     conn: &lapin::Connection,
     executor: Arc<PipelineExecutor>,
-) -> Result<(), PipelineError> {
+) -> Result<()> {
     // Create two channels: one for consuming tasks, one for publishing results/outcomes
     let consume_channel = conn.create_channel().await.map_err(|e| {
         PipelineError::QueueError(format!("Worker failed to create consume channel: {}", e))
@@ -247,24 +247,22 @@ async fn process_tasks(
                                     TASKS_PROCESSED_TOTAL.inc();
                                     Some(ProcessingOutcome::Success(processed_doc))
                                 }
-                                Err(pipeline_error) => {
-                                    match pipeline_error {
-                                        PipelineError::DocumentFiltered { document, reason } => {
-                                            info!(filtered_doc_id = %document.id, %reason, "Document was filtered");
-                                            TASKS_FILTERED_TOTAL.inc();
-                                            Some(ProcessingOutcome::Filtered { document, reason })
-                                        }
-                                        other_error => {
-                                            error!(error = %other_error, "Pipeline execution failed");
-                                            TASKS_FAILED_TOTAL.inc();
-                                            Some(ProcessingOutcome::Error {
-                                                document: doc,
-                                                error_message: other_error.to_string(),
-                                                worker_id: worker_id_tag,
-                                            })
-                                        }
+                                Err(pipeline_error) => match pipeline_error {
+                                    PipelineError::DocumentFiltered { document, reason } => {
+                                        info!(filtered_doc_id = %document.id, %reason, "Document was filtered");
+                                        TASKS_FILTERED_TOTAL.inc();
+                                        Some(ProcessingOutcome::Filtered { document, reason })
                                     }
-                                }
+                                    other_error => {
+                                        error!(error = %other_error, "Pipeline execution failed");
+                                        TASKS_FAILED_TOTAL.inc();
+                                        Some(ProcessingOutcome::Error {
+                                            document: doc,
+                                            error_message: other_error.to_string(),
+                                            worker_id: worker_id_tag,
+                                        })
+                                    }
+                                },
                             }
                         }
                         Err(e) => {
@@ -323,7 +321,10 @@ async fn process_tasks(
             Err(e) => {
                 error!(error = %e, "Error receiving task message from consumer stream. Worker will stop.");
                 // This error will propagate up from process_tasks if the loop breaks
-                return Err(PipelineError::QueueError(format!("Consumer stream error: {}", e)));
+                return Err(PipelineError::QueueError(format!(
+                    "Consumer stream error: {}",
+                    e
+                )));
             }
         }
     }
