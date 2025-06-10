@@ -7,10 +7,8 @@ use lapin::{
     options::{BasicAckOptions, BasicConsumeOptions, BasicPublishOptions, QueueDeclareOptions},
     protocol::basic::AMQPProperties,
     types::FieldTable,
-    Connection, ConnectionProperties, Result as LapinResult,
 };
-use std::time::{Duration, Instant}; // Added Instant
-use tokio::time::sleep;
+use std::time::Instant; // Added Instant
 use tracing::{error, info, warn}; // Added tracing
 use tracing_subscriber::{fmt, EnvFilter}; // Added tracing_subscriber
 use TextBlaster::config::ParquetInputConfig;
