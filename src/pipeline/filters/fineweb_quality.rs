@@ -39,7 +39,7 @@ fn default_stop_chars() -> HashSet<char> {
 }
 
 #[derive(Debug)]
-pub struct FineWebQualityFilterImpl {
+pub struct FineWebQualityFilter {
     line_punct_thr: f64,
     line_punct_exclude_zero: bool,
     stop_chars: HashSet<char>,
@@ -50,7 +50,7 @@ pub struct FineWebQualityFilterImpl {
     language: String, // Stored, but might not be actively used by utils::text::split_into_words
 }
 
-impl FineWebQualityFilterImpl {
+impl FineWebQualityFilter {
     pub fn setup(_config_dir: &Path, filter_config: Option<&Value>) -> anyhow::Result<Self> {
         let config = filter_config.unwrap_or(&Value::Null);
 
@@ -118,14 +118,17 @@ impl FineWebQualityFilterImpl {
 }
 
 #[async_trait]
-impl ProcessingStep for FineWebQualityFilterImpl {
+impl ProcessingStep for FineWebQualityFilter {
     fn name(&self) -> &'static str {
         DEFAULT_FILTER_NAME
     }
 
     async fn process(&self, document: TextDocument) -> Result<TextDocument> {
         let text_content = &document.content;
-        let lines: Vec<&str> = text_content.lines().filter(|line| !line.trim().is_empty()).collect();
+        let lines: Vec<&str> = text_content
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .collect();
 
         if lines.is_empty() {
             return Err(PipelineError::DocumentFiltered {
@@ -138,7 +141,8 @@ impl ProcessingStep for FineWebQualityFilterImpl {
         let lines_ending_with_stop_chars = lines
             .iter()
             .filter(|line| {
-                if let Some(last_char) = line.trim_end().chars().last() { // Trim trailing whitespace before checking last char
+                if let Some(last_char) = line.trim_end().chars().last() {
+                    // Trim trailing whitespace before checking last char
                     self.stop_chars.contains(&last_char)
                 } else {
                     false // Empty line (after trim) doesn't end with stop char
@@ -147,8 +151,9 @@ impl ProcessingStep for FineWebQualityFilterImpl {
             .count();
 
         let line_punct_actual_ratio = lines_ending_with_stop_chars as f64 / lines.len() as f64;
-        if line_punct_actual_ratio < self.line_punct_thr &&
-           !(line_punct_actual_ratio == 0.0 && self.line_punct_exclude_zero) {
+        if line_punct_actual_ratio < self.line_punct_thr
+            && !(line_punct_actual_ratio == 0.0 && self.line_punct_exclude_zero)
+        {
             return Err(PipelineError::DocumentFiltered {
                 document,
                 reason: format!(
@@ -225,8 +230,8 @@ mod tests {
     use std::collections::HashMap as StdHashMap; // For creating TextDocument metadata
 
     // Helper to create a default filter instance for tests
-    fn default_filter() -> FineWebQualityFilterImpl {
-        FineWebQualityFilterImpl {
+    fn default_filter() -> FineWebQualityFilter {
+        FineWebQualityFilter {
             line_punct_thr: DEFAULT_LINE_PUNCT_THR,
             line_punct_exclude_zero: DEFAULT_LINE_PUNCT_EXCLUDE_ZERO,
             stop_chars: default_stop_chars(),
@@ -293,8 +298,8 @@ mod tests {
     async fn test_line_punct_ratio_pass() {
         let mut filter = default_filter();
         filter.short_line_thr = 1.0; // Make short line pass easily
-        // char_dup_ratio is 0.95 from default_filter, should pass this text.
-        // new_line_ratio is 0.3, should pass this text.
+                                     // char_dup_ratio is 0.95 from default_filter, should pass this text.
+                                     // new_line_ratio is 0.3, should pass this text.
         let content = "Line one is long enough and ends with a period.\nLine two is also long enough and ends with a question mark?\nLine three is also very long indeed and ends with an exclamation mark!"; // 3/3 = 1.0
         let doc = create_test_doc("punct_pass", content);
         assert!(filter.process(doc).await.is_ok());
@@ -306,8 +311,8 @@ mod tests {
         filter.line_punct_exclude_zero = true;
         filter.line_punct_thr = 0.12;
         filter.short_line_thr = 1.0; // Make short lines pass
-        // char_dup_ratio is 0.95, should pass.
-        // new_line_ratio is 0.3, should pass.
+                                     // char_dup_ratio is 0.95, should pass.
+                                     // new_line_ratio is 0.3, should pass.
         let content = "Looooooooong line one, no punctuation here\nLooooooooong line two, also no punctuation\nLooooooooong line three, definitely no punctuation"; // 0/3 = 0.0. All lines long.
         let doc = create_test_doc("punct_zero_exclude_true", content);
         assert!(filter.process(doc).await.is_ok());
@@ -342,7 +347,7 @@ mod tests {
         assert!(result.is_err());
         match result.err().unwrap() {
             PipelineError::DocumentFiltered { reason, .. } => {
-                 assert!(reason.starts_with("short_line_ratio: 0.7500 > threshold 0.6700"));
+                assert!(reason.starts_with("short_line_ratio: 0.7500 > threshold 0.6700"));
             }
             _ => panic!("Expected DocumentFiltered for short_line_ratio"),
         }
@@ -351,15 +356,15 @@ mod tests {
     #[tokio::test]
     async fn test_short_line_ratio_pass() {
         let filter = default_filter(); // Removed mut
-        // Ensure other checks pass:
-        // filter.line_punct_thr = 0.0; // Allow lines to not end with punctuation
-        // char_dup_ratio is 0.95 (permissive)
-        // new_line_ratio is 0.3
+                                       // Ensure other checks pass:
+                                       // filter.line_punct_thr = 0.0; // Allow lines to not end with punctuation
+                                       // char_dup_ratio is 0.95 (permissive)
+                                       // new_line_ratio is 0.3
         let content_punctuated = "This line is adequately long and should pass.\nSo is this one, it meets the criteria perfectly.\nAnd another one just to be sure it's fine."; // All lines end with '.'
-        // Line punct: 3/3 = 1.0. Pass.
-        // Short line: 0 short lines / 3 total lines = 0.0 <= 0.67. Pass.
-        // Char dup: (default 0.95) Pass.
-        // Newline: 2 newlines / many words. Pass.
+                                                                                                                                                                                // Line punct: 3/3 = 1.0. Pass.
+                                                                                                                                                                                // Short line: 0 short lines / 3 total lines = 0.0 <= 0.67. Pass.
+                                                                                                                                                                                // Char dup: (default 0.95) Pass.
+                                                                                                                                                                                // Newline: 2 newlines / many words. Pass.
         let doc_punctuated = create_test_doc("short_line_pass_punctuated", content_punctuated);
         assert!(filter.process(doc_punctuated).await.is_ok());
     }
@@ -368,21 +373,26 @@ mod tests {
     #[tokio::test]
     async fn test_char_dup_ratio_fail() {
         let mut filter = default_filter(); // char_dup_ratio is 0.95 (permissive by default for tests)
-        // Make other checks pass easily for this specific test
+                                           // Make other checks pass easily for this specific test
         filter.line_punct_thr = 0.0;
         filter.short_line_thr = 1.0;
         filter.new_line_ratio = 1.0; // Allow many newlines
 
         filter.char_duplicates_ratio = 0.7; // Set specific threshold for this test to fail
         let content = "aaaaabbbbbcccccdddddeeeeefffffggggghhhhh."; // Ends with '.', 41 chars
-        // Repeated for 'a': 4. Total repeated: 8 * 4 = 32.
-        // Ratio: 32 / 41 = ~0.7804
+                                                                   // Repeated for 'a': 4. Total repeated: 8 * 4 = 32.
+                                                                   // Ratio: 32 / 41 = ~0.7804
         let doc = create_test_doc("char_dup_fail", content);
         let result = filter.process(doc).await;
         assert!(result.is_err());
         match result.err().unwrap() {
             PipelineError::DocumentFiltered { reason, .. } => {
-                 assert!(reason.starts_with("char_dup_ratio: 0.7804 > threshold 0.7000") || reason.starts_with("char_dup_ratio: 0.7805 > threshold 0.7000"), "Actual reason: {}", reason);
+                assert!(
+                    reason.starts_with("char_dup_ratio: 0.7804 > threshold 0.7000")
+                        || reason.starts_with("char_dup_ratio: 0.7805 > threshold 0.7000"),
+                    "Actual reason: {}",
+                    reason
+                );
             }
             _ => panic!("Expected DocumentFiltered for char_dup_ratio"),
         }
@@ -398,7 +408,11 @@ mod tests {
         let content = "abcdefghijklmnopqrstuvwxyz.\n1234567890."; // Ends with '.', 0 duplicates
         let doc = create_test_doc("char_dup_pass_none", content);
         let result = filter.process(doc).await;
-        assert!(result.is_ok(), "Test failed with reason: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Test failed with reason: {:?}",
+            result.err()
+        );
     }
 
     #[tokio::test]
@@ -411,7 +425,6 @@ mod tests {
         let doc_passes = create_test_doc("char_dup_pass_low_actual", content_passes);
         assert!(filter.process(doc_passes).await.is_ok());
     }
-
 
     #[tokio::test]
     async fn test_char_dup_ratio_all_same_char_fail() {
@@ -427,8 +440,13 @@ mod tests {
         assert!(result.is_err());
         match result.err().unwrap() {
             PipelineError::DocumentFiltered { reason, .. } => {
-                 // Ratio 29/31 = 0.93548...
-                 assert!(reason.starts_with("char_dup_ratio: 0.9354 > threshold 0.9000") || reason.starts_with("char_dup_ratio: 0.9355 > threshold 0.9000"), "Actual reason: {}", reason);
+                // Ratio 29/31 = 0.93548...
+                assert!(
+                    reason.starts_with("char_dup_ratio: 0.9354 > threshold 0.9000")
+                        || reason.starts_with("char_dup_ratio: 0.9355 > threshold 0.9000"),
+                    "Actual reason: {}",
+                    reason
+                );
             }
             _ => panic!("Expected DocumentFiltered for char_dup_ratio with all same chars"),
         }
@@ -442,18 +460,21 @@ mod tests {
         filter.new_line_ratio = 1.0;
 
         filter.char_duplicates_ratio = 0.4; // Content "你好你好你好." ratio (4 repeats / 7 total chars) = 0.5714...
-        let content = "你好你好你好.";  // Ends with '.'
+        let content = "你好你好你好."; // Ends with '.'
         let doc = create_test_doc("char_dup_unicode", content);
         let result = filter.process(doc).await;
         assert!(result.is_err());
-         match result.err().unwrap() {
+        match result.err().unwrap() {
             PipelineError::DocumentFiltered { reason, .. } => {
-                 assert!(reason.starts_with("char_dup_ratio: 0.5714 > threshold 0.4000"), "Actual reason: {}", reason);
+                assert!(
+                    reason.starts_with("char_dup_ratio: 0.5714 > threshold 0.4000"),
+                    "Actual reason: {}",
+                    reason
+                );
             }
             _ => panic!("Expected DocumentFiltered for unicode char_dup_ratio"),
         }
     }
-
 
     // 5. New Line Ratio Tests
     #[tokio::test]
@@ -468,7 +489,11 @@ mod tests {
         assert!(result.is_err());
         match result.err().unwrap() {
             PipelineError::DocumentFiltered { reason, .. } => {
-                 assert!(reason.starts_with("list_ratio: 0.8000 > threshold 0.3000"), "Actual reason: {}", reason);
+                assert!(
+                    reason.starts_with("list_ratio: 0.8000 > threshold 0.3000"),
+                    "Actual reason: {}",
+                    reason
+                );
             }
             _ => panic!("Expected DocumentFiltered for list_ratio"),
         }
@@ -479,7 +504,8 @@ mod tests {
         let filter_single_line = default_filter();
         // char_dup is 0.95
         // Case 1: Single line
-        let content_single_line = "Many words on a single line with no newlines effectively. This should pass easily."; // Ends with '.'
+        let content_single_line =
+            "Many words on a single line with no newlines effectively. This should pass easily."; // Ends with '.'
         let doc_single_line = create_test_doc("new_line_pass_single_line", content_single_line);
         assert!(filter_single_line.process(doc_single_line).await.is_ok());
 
@@ -499,7 +525,7 @@ mod tests {
         assert!(result.is_err());
         match result.err().unwrap() {
             PipelineError::DocumentFiltered { reason, .. } => {
-                 assert_eq!(reason, "empty"); // Corrected: "empty" check takes precedence
+                assert_eq!(reason, "empty"); // Corrected: "empty" check takes precedence
             }
             _ => panic!("Expected DocumentFiltered for list_ratio_no_words, but got empty"),
         }
@@ -510,32 +536,35 @@ mod tests {
         let filter = default_filter();
         // Content that results in no words from split_into_words, e.g., only punctuation
         let content = "... --- !!!"; // No newlines, 0 words. Line length 11.
-        // Lines: ["... --- !!!"] (1 line)
-        // Line Punct Ratio: ends with '!', ratio 1/1 = 1.0. Passes (1.0 >= 0.12).
-        // Short Line Ratio: line length 11 <= 30. short_lines_count = 1. Ratio 1/1 = 1.0.
-        // 1.0 > short_line_thr (0.67) is TRUE. Fails here.
+                                     // Lines: ["... --- !!!"] (1 line)
+                                     // Line Punct Ratio: ends with '!', ratio 1/1 = 1.0. Passes (1.0 >= 0.12).
+                                     // Short Line Ratio: line length 11 <= 30. short_lines_count = 1. Ratio 1/1 = 1.0.
+                                     // 1.0 > short_line_thr (0.67) is TRUE. Fails here.
         let doc = create_test_doc("new_line_no_words_no_nl", content);
         let result = filter.process(doc).await;
-         assert!(result.is_err());
-         match result.err().unwrap() {
+        assert!(result.is_err());
+        match result.err().unwrap() {
             PipelineError::DocumentFiltered { reason, .. } => {
                 // Expected failure is now short_line_ratio
-                 assert!(reason.starts_with("short_line_ratio: 1.0000 > threshold 0.6700"), "Actual reason: {}", reason);
+                assert!(
+                    reason.starts_with("short_line_ratio: 1.0000 > threshold 0.6700"),
+                    "Actual reason: {}",
+                    reason
+                );
             }
             _ => panic!("Expected DocumentFiltered for content '...' due to short_line_ratio"),
         }
     }
 
-
     // 6. Passing Document Test
     #[tokio::test]
     async fn test_passing_document() {
         let filter = default_filter(); // char_duplicates_ratio is now 0.95 from default_filter()
-        // filter.char_duplicates_ratio = 0.5; // No longer needed to override here if default is high
-        // Ensure other defaults are met by the content.
-        // line_punct_thr: 0.12 (at least 12% lines end with stop char)
-        // short_line_thr: 0.67 (no more than 67% lines are <=30 chars)
-        // new_line_ratio: 0.3 (newlines / words)
+                                       // filter.char_duplicates_ratio = 0.5; // No longer needed to override here if default is high
+                                       // Ensure other defaults are met by the content.
+                                       // line_punct_thr: 0.12 (at least 12% lines end with stop char)
+                                       // short_line_thr: 0.67 (no more than 67% lines are <=30 chars)
+                                       // new_line_ratio: 0.3 (newlines / words)
 
         let content = "This is a good line that ends with a period.\nAnother good line also ends with a question mark?\nShort lines are not too frequent here, which is great!\nCharacter duplication is hopefully not too high in this example text.\nAnd the ratio of newlines to words should be reasonable as well.";
         // Lines: 5
@@ -555,6 +584,10 @@ mod tests {
 
         let doc = create_test_doc("passing_doc", content);
         let result = filter.process(doc).await;
-        assert!(result.is_ok(), "Document failed but was expected to pass. Reason: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Document failed but was expected to pass. Reason: {:?}",
+            result.err()
+        );
     }
 }

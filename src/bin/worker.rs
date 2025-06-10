@@ -25,8 +25,12 @@ use lapin::{
     Result as LapinResult,
 };
 use TextBlaster::pipeline::filters::{
-    C4BadWordsFilter, C4QualityFilter, FineWebQualityFilterImpl, GopherQualityFilter, // Updated import
-    GopherRepetitionFilter, LanguageDetectionFilter,
+    C4BadWordsFilter,
+    C4QualityFilter,
+    FineWebQualityFilter,
+    GopherQualityFilter, // Updated import
+    GopherRepetitionFilter,
+    LanguageDetectionFilter,
 };
 
 use std::path::{Path, PathBuf};
@@ -246,7 +250,8 @@ fn build_pipeline_from_config(config: &PipelineConfig) -> Result<Vec<Box<dyn Pro
                 debug!(params = ?params, "Adding C4BadWordsFilter");
                 Box::new(C4BadWordsFilter::new(params.clone()))
             }
-            StepConfig::FineWebQualityFilter(params) => { // Updated variant name
+            StepConfig::FineWebQualityFilter(params) => {
+                // Updated variant name
                 debug!(params = ?params, "Adding FineWebQualityFilterImpl");
 
                 let mut config_map = serde_json::Map::new();
@@ -254,10 +259,16 @@ fn build_pipeline_from_config(config: &PipelineConfig) -> Result<Vec<Box<dyn Pro
                     config_map.insert("line_punct_thr".to_string(), serde_json::json!(val));
                 }
                 if let Some(val) = params.line_punct_exclude_zero {
-                    config_map.insert("line_punct_exclude_zero".to_string(), serde_json::Value::Bool(val));
+                    config_map.insert(
+                        "line_punct_exclude_zero".to_string(),
+                        serde_json::Value::Bool(val),
+                    );
                 }
                 if let Some(ref val_vec) = params.stop_chars {
-                    let json_arr = val_vec.iter().map(|s| serde_json::Value::String(s.clone())).collect();
+                    let json_arr = val_vec
+                        .iter()
+                        .map(|s| serde_json::Value::String(s.clone()))
+                        .collect();
                     config_map.insert("stop_chars".to_string(), serde_json::Value::Array(json_arr));
                 }
                 if let Some(val) = params.short_line_thr {
@@ -273,7 +284,10 @@ fn build_pipeline_from_config(config: &PipelineConfig) -> Result<Vec<Box<dyn Pro
                     config_map.insert("new_line_ratio".to_string(), serde_json::json!(val));
                 }
                 if let Some(ref val) = params.language {
-                    config_map.insert("language".to_string(), serde_json::Value::String(val.clone()));
+                    config_map.insert(
+                        "language".to_string(),
+                        serde_json::Value::String(val.clone()),
+                    );
                 }
 
                 let filter_config_value = if config_map.is_empty() {
@@ -283,8 +297,8 @@ fn build_pipeline_from_config(config: &PipelineConfig) -> Result<Vec<Box<dyn Pro
                 };
 
                 Box::new(
-                    FineWebQualityFilterImpl::setup(Path::new(""), filter_config_value.as_ref()) // Use new struct and setup
-                        .expect("Failed to setup FineWebQualityFilterImpl"),
+                    FineWebQualityFilter::setup(Path::new(""), filter_config_value.as_ref()) // Use new struct and setup
+                        .expect("Failed to setup FineWebQualityFilter"),
                 )
             }
         };

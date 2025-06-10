@@ -32,8 +32,8 @@ pub enum StepConfig {
     GopherQualityFilter(GopherQualityParams),
     C4BadWordsFilter(C4BadWordsParams), // New
     LanguageDetectionFilter(LanguageDetectionParams),
-    FineWebQualityFilter(FineWebQualityFilterImplParams), // Renamed and new params struct
-    // Add other filter/step types here as needed
+    FineWebQualityFilter(FineWebQualityFilterParams), // Renamed and new params struct
+                                                      // Add other filter/step types here as needed
 }
 
 impl StepConfig {
@@ -46,7 +46,7 @@ impl StepConfig {
             StepConfig::C4BadWordsFilter(_) => "C4BadWordsFilter", // New
             StepConfig::LanguageDetectionFilter(_) => "LanguageDetectionFilter",
             StepConfig::FineWebQualityFilter(_) => "FineWebQualityFilter", // Renamed
-            // Add cases for other StepConfig variants here
+                                                                           // Add cases for other StepConfig variants here
         }
     }
 }
@@ -113,9 +113,9 @@ pub struct LanguageDetectionParams {
     pub allowed_languages: Vec<String>,
 }
 
-// Parameters for the FineWebQualityFilterImpl (new filter based on Python logic).
+// Parameters for the FineWebQualityFilter (new filter based on Python logic).
 #[derive(Deserialize, Debug, Clone, Default)] // Added Default for easier construction in worker
-pub struct FineWebQualityFilterImplParams {
+pub struct FineWebQualityFilterParams {
     #[serde(default)] // Ensure that if the key is missing, it uses Option::None
     pub line_punct_thr: Option<f64>,
     #[serde(default)]
