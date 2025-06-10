@@ -5,7 +5,7 @@ use std::time::Duration;
 use tokio::time::sleep;
 use tracing::{error, info};
 
-use crate::error::{PipelineError, Result};
+use crate::error::Result;
 use axum::{http::StatusCode, routing::get, serve, Router};
 use prometheus::{gather, Encoder, TextEncoder};
 use tokio::net::TcpListener; // Assuming Result is crate::error::Result for PipelineError
