@@ -20,9 +20,6 @@ use lapin::{
     },
     protocol::basic::AMQPProperties, // Added AMQPProperties
     types::FieldTable,
-    Connection,
-    ConnectionProperties,
-    Result as LapinResult,
 };
 use TextBlaster::pipeline::filters::{
     C4BadWordsFilter, C4QualityFilter, GopherQualityFilter, GopherRepetitionFilter,
@@ -33,8 +30,7 @@ use TextBlaster::utils::utils::{connect_rabbitmq, setup_prometheus_metrics}; // 
 
 use std::path::PathBuf;
 use std::sync::Arc; // To share the executor across potential concurrent tasks
-use std::time::Duration;
-use tokio::time::sleep; // {{ Add serde_json for result serialization }}
+ // {{ Add serde_json for result serialization }}
 use tracing::{debug, error, info, info_span, instrument, warn}; // Added tracing
 use tracing_subscriber::{fmt, EnvFilter}; // Added tracing_subscriber
 
