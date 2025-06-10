@@ -20,9 +20,6 @@ use lapin::{
     },
     protocol::basic::AMQPProperties, // Added AMQPProperties
     types::FieldTable,
-    Connection,
-    ConnectionProperties,
-    Result as LapinResult,
 };
 use TextBlaster::pipeline::filters::{
     C4BadWordsFilter,
@@ -32,11 +29,12 @@ use TextBlaster::pipeline::filters::{
     GopherRepetitionFilter,
     LanguageDetectionFilter,
 };
+use TextBlaster::utils::prometheus_metrics::*;
+use TextBlaster::utils::utils::{connect_rabbitmq, setup_prometheus_metrics}; // Using shared setup_prometheus_metrics // Import shared metrics
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc; // To share the executor across potential concurrent tasks
-use std::time::Duration;
-use tokio::time::sleep; // {{ Add serde_json for result serialization }}
+ // {{ Add serde_json for result serialization }}
 use tracing::{debug, error, info, info_span, instrument, warn}; // Added tracing
 use tracing_subscriber::{fmt, EnvFilter}; // Added tracing_subscriber
 
@@ -72,119 +70,8 @@ struct Args {
     metrics_port: Option<u16>,
 }
 
-// --- Prometheus Metrics ---
-use once_cell::sync::Lazy;
-use prometheus::{
-    register_counter, register_gauge, register_histogram, Counter, Encoder, Gauge, Histogram,
-    TextEncoder,
-};
-
-static TASKS_PROCESSED_TOTAL: Lazy<Counter> = Lazy::new(|| {
-    register_counter!(
-        "worker_tasks_processed_total",
-        "Total number of tasks processed by the worker."
-    )
-    .expect("Failed to register worker_tasks_processed_total counter")
-});
-
-static TASKS_FILTERED_TOTAL: Lazy<Counter> = Lazy::new(|| {
-    register_counter!(
-        "worker_tasks_filtered_total",
-        "Total number of tasks filtered by the pipeline."
-    )
-    .expect("Failed to register worker_tasks_filtered_total counter")
-});
-
-static TASKS_FAILED_TOTAL: Lazy<Counter> = Lazy::new(|| {
-    register_counter!(
-        "worker_tasks_failed_total",
-        "Total number of tasks that resulted in a pipeline error."
-    )
-    .expect("Failed to register worker_tasks_failed_total counter")
-});
-
-static TASK_DESERIALIZATION_ERRORS_TOTAL: Lazy<Counter> = Lazy::new(|| {
-    register_counter!(
-        "worker_task_deserialization_errors_total",
-        "Total number of errors deserializing incoming task messages."
-    )
-    .expect("Failed to register worker_task_deserialization_errors_total counter")
-});
-
-static OUTCOME_PUBLISH_ERRORS_TOTAL: Lazy<Counter> = Lazy::new(|| {
-    register_counter!(
-        "worker_outcome_publish_errors_total",
-        "Total number of errors publishing outcome messages."
-    )
-    .expect("Failed to register worker_outcome_publish_errors_total counter")
-});
-
-static TASK_PROCESSING_DURATION_SECONDS: Lazy<Histogram> = Lazy::new(|| {
-    register_histogram!(
-        "worker_task_processing_duration_seconds",
-        "Histogram of task processing durations (from message receipt to outcome published/error)."
-    )
-    .expect("Failed to register worker_task_processing_duration_seconds histogram")
-});
-
-static ACTIVE_PROCESSING_TASKS: Lazy<Gauge> = Lazy::new(|| {
-    register_gauge!(
-        "worker_active_processing_tasks",
-        "Number of tasks currently being processed concurrently."
-    )
-    .expect("Failed to register worker_active_processing_tasks gauge")
-});
-
-// Axum handler for /metrics
-async fn metrics_handler() -> (axum::http::StatusCode, String) {
-    let encoder = TextEncoder::new();
-    let mut buffer = vec![];
-    if let Err(e) = encoder.encode(&prometheus::gather(), &mut buffer) {
-        error!("Could not encode prometheus metrics: {}", e);
-        return (
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Could not encode prometheus metrics: {}", e),
-        );
-    }
-    match String::from_utf8(buffer) {
-        Ok(s) => (axum::http::StatusCode::OK, s),
-        Err(e) => {
-            error!("Prometheus metrics UTF-8 error: {}", e);
-            (
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Prometheus metrics UTF-8 error: {}", e),
-            )
-        }
-    }
-}
-
-// Re-use the connection helper from producer (or move to lib.rs if desired)
-async fn connect_rabbitmq(addr: &str) -> LapinResult<Connection> {
-    let options = ConnectionProperties::default()
-        .with_executor(tokio_executor_trait::Tokio::current())
-        .with_reactor(tokio_reactor_trait::Tokio);
-    let mut attempts = 0;
-    loop {
-        match Connection::connect(addr, options.clone()).await {
-            Ok(conn) => {
-                info!("Successfully connected to RabbitMQ at {}", addr);
-                return Ok(conn);
-            }
-            Err(e) => {
-                attempts += 1;
-                error!(
-                    attempt = attempts,
-                    error = %e,
-                    "Failed to connect to RabbitMQ. Retrying in 5 seconds..."
-                );
-                if attempts >= 5 {
-                    return Err(e);
-                }
-                sleep(Duration::from_secs(5)).await;
-            }
-        }
-    }
-}
+// --- Prometheus Metrics (now imported from TextBlaster::utils::prometheus_metrics) ---
+// The local static definitions and specific prometheus imports are removed.
 
 // {{ Add the new function to build pipeline from configuration }}
 /// Builds the processing pipeline based on the configuration read from YAML.
@@ -314,58 +201,12 @@ fn build_pipeline_from_config(config: &PipelineConfig) -> Result<Vec<Box<dyn Pro
     Ok(steps)
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    let args = Args::parse();
-
-    // Initialize tracing subscriber
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")); // Default to info if RUST_LOG is not set
-    fmt::Subscriber::builder().with_env_filter(filter).init();
-
-    // --- Optional: Start Metrics Endpoint ---
-    if let Some(port) = args.metrics_port {
-        let app = axum::Router::new().route("/metrics", axum::routing::get(metrics_handler));
-        let listener_addr = format!("0.0.0.0:{}", port);
-        info!(
-            "Metrics endpoint will be available at http://{}/metrics",
-            listener_addr
-        );
-
-        tokio::spawn(async move {
-            match tokio::net::TcpListener::bind(&listener_addr).await {
-                Ok(listener) => {
-                    if let Err(e) = axum::serve(listener, app).await {
-                        error!("Metrics server error: {}", e);
-                    }
-                }
-                Err(e) => {
-                    error!("Failed to bind metrics server to {}: {}", listener_addr, e);
-                }
-            }
-        });
-    }
-
-    info!("Worker starting.");
-    info!(
-        "Loading pipeline configuration from: {}",
-        args.pipeline_config.display()
-    );
-    info!(
-        "Consuming from queue '{}', publishing outcomes to '{}' @ {}",
-        args.task_queue, args.results_queue, args.amqp_addr
-    );
-    info!("Prefetch count: {}", args.prefetch_count);
-
-    // {{ Load and parse the pipeline configuration }}
-    let pipeline_config: PipelineConfig = load_pipeline_config(&args.pipeline_config)?;
-
-    // 1. Connect to RabbitMQ
-    let conn = connect_rabbitmq(&args.amqp_addr)
-        .await
-        .map_err(|e| PipelineError::QueueError(format!("Worker failed to connect: {}", e)))?;
-
+async fn process_tasks(
+    args: &Args,
+    conn: &lapin::Connection,
+    executor: Arc<PipelineExecutor>,
+) -> Result<()> {
     // Create two channels: one for consuming tasks, one for publishing results/outcomes
-    // This avoids potential channel-level blocking issues if one operation stalls.
     let consume_channel = conn.create_channel().await.map_err(|e| {
         PipelineError::QueueError(format!("Worker failed to create consume channel: {}", e))
     })?;
@@ -373,7 +214,7 @@ async fn main() -> Result<()> {
         PipelineError::QueueError(format!("Worker failed to create publish channel: {}", e))
     })?;
 
-    // 2. Declare the task queue (ensure durability matches producer)
+    // Declare the task queue (ensure durability matches producer)
     let _task_queue = consume_channel
         .queue_declare(
             &args.task_queue,
@@ -388,7 +229,7 @@ async fn main() -> Result<()> {
             PipelineError::QueueError(format!("Worker failed to declare task queue: {}", e))
         })?;
 
-    // 2b. Declare the results queue (also durable)
+    // Declare the results queue (also durable)
     let _results_queue = publish_channel
         .queue_declare(
             &args.results_queue,
@@ -403,23 +244,17 @@ async fn main() -> Result<()> {
             PipelineError::QueueError(format!("Worker failed to declare results queue: {}", e))
         })?;
 
-    // 3. Set Quality of Service (Prefetch Count) on the consume channel
+    // Set Quality of Service (Prefetch Count) on the consume channel
     consume_channel
         .basic_qos(args.prefetch_count, BasicQosOptions::default())
         .await
         .map_err(|e| PipelineError::QueueError(format!("Failed to set QoS: {}", e)))?;
 
-    // 4. Create the Pipeline Executor using the configuration
-    // {{ Replace temporary variable with call to build_pipeline_from_config }}
-    let pipeline_steps = build_pipeline_from_config(&pipeline_config)?;
-    // The warning inside build_pipeline_from_config already covers the empty case
-    let executor = Arc::new(PipelineExecutor::new(pipeline_steps));
-
-    // 5. Start Consuming Messages from the task queue
+    // Start Consuming Messages from the task queue
     let consumer_tag = format!(
         "worker-{}-{}",
         std::process::id(),
-        chrono::Utc::now().timestamp()
+        chrono::Utc::now().timestamp() // Ensure chrono::Utc is imported
     );
     info!(consumer_tag = %consumer_tag, "Worker started consuming tasks. Waiting for messages...");
 
@@ -433,22 +268,18 @@ async fn main() -> Result<()> {
         .await
         .map_err(|e| PipelineError::QueueError(format!("Failed to start consuming: {}", e)))?;
 
-    // This println! is now an info! log above.
-    // println!("Worker started consuming tasks. Waiting for messages...");
-
-    // 6. Process messages from the stream
+    // Process messages from the stream
     while let Some(delivery_result) = consumer.next().await {
         match delivery_result {
             Ok(delivery) => {
                 let executor_clone = Arc::clone(&executor);
                 let publish_channel_clone = publish_channel.clone();
                 let results_queue_name = args.results_queue.clone();
-                let worker_id = consumer_tag.clone(); // Clone consumer_tag for use in this task
+                let worker_id_tag = consumer_tag.clone(); // Use the specific consumer_tag for this worker instance
 
-                // Spawn a Tokio task to process the message concurrently
                 tokio::spawn(async move {
-                    ACTIVE_PROCESSING_TASKS.inc(); // Increment gauge when task starts
-                    let processing_timer = TASK_PROCESSING_DURATION_SECONDS.start_timer(); // Start timer
+                    ACTIVE_PROCESSING_TASKS.inc();
+                    let processing_timer = TASK_PROCESSING_DURATION_SECONDS.start_timer();
 
                     let result: Option<ProcessingOutcome> = match serde_json::from_slice::<
                         TextDocument,
@@ -462,31 +293,27 @@ async fn main() -> Result<()> {
                             debug!("Processing document");
 
                             match executor_clone.run_single_async(doc.clone()).await {
-                                // Clone doc for error case
                                 Ok(processed_doc) => {
                                     debug!(processed_doc_id = %processed_doc.id, "Successfully processed document");
-                                    TASKS_PROCESSED_TOTAL.inc(); // Increment success counter
+                                    TASKS_PROCESSED_TOTAL.inc();
                                     Some(ProcessingOutcome::Success(processed_doc))
                                 }
-                                Err(pipeline_error) => {
-                                    match pipeline_error {
-                                        PipelineError::DocumentFiltered { document, reason } => {
-                                            info!(filtered_doc_id = %document.id, %reason, "Document was filtered");
-                                            TASKS_FILTERED_TOTAL.inc(); // Increment filtered counter
-                                            Some(ProcessingOutcome::Filtered { document, reason })
-                                        }
-                                        // Handle other PipelineError variants as ProcessingOutcome::Error
-                                        other_error => {
-                                            error!(error = %other_error, "Pipeline execution failed with unexpected error");
-                                            TASKS_FAILED_TOTAL.inc(); // Increment failed counter
-                                            Some(ProcessingOutcome::Error {
-                                                document: doc, // Use the original document
-                                                error_message: other_error.to_string(),
-                                                worker_id: worker_id.clone(), // Use the cloned worker_id
-                                            })
-                                        }
+                                Err(pipeline_error) => match pipeline_error {
+                                    PipelineError::DocumentFiltered { document, reason } => {
+                                        info!(filtered_doc_id = %document.id, %reason, "Document was filtered");
+                                        TASKS_FILTERED_TOTAL.inc();
+                                        Some(ProcessingOutcome::Filtered { document, reason })
                                     }
-                                }
+                                    other_error => {
+                                        error!(error = %other_error, "Pipeline execution failed");
+                                        TASKS_FAILED_TOTAL.inc();
+                                        Some(ProcessingOutcome::Error {
+                                            document: doc,
+                                            error_message: other_error.to_string(),
+                                            worker_id: worker_id_tag,
+                                        })
+                                    }
+                                },
                             }
                         }
                         Err(e) => {
@@ -496,14 +323,12 @@ async fn main() -> Result<()> {
                                 payload = %String::from_utf8_lossy(&delivery.data),
                                 "Failed to deserialize task message"
                             );
-                            TASK_DESERIALIZATION_ERRORS_TOTAL.inc(); // Increment deserialization error counter
-                            None // No outcome on deserialization error
+                            TASK_DESERIALIZATION_ERRORS_TOTAL.inc();
+                            None
                         }
                     };
 
-                    // Send outcome back to producer if it's Success or Filtered or Error
                     if let Some(actual_outcome) = result {
-                        // Use the result variable
                         match serde_json::to_vec(&actual_outcome) {
                             Ok(payload) => {
                                 let publish_confirm = publish_channel_clone
@@ -521,47 +346,90 @@ async fn main() -> Result<()> {
                                         Ok(_) => debug!("Published outcome"),
                                         Err(e) => {
                                             error!(error = %e, "Failed publish confirmation for outcome");
-                                            OUTCOME_PUBLISH_ERRORS_TOTAL.inc(); // Increment publish error counter
+                                            OUTCOME_PUBLISH_ERRORS_TOTAL.inc();
                                         }
                                     },
                                     Err(e) => {
                                         error!(error = %e, "Failed to initiate publish for outcome");
-                                        OUTCOME_PUBLISH_ERRORS_TOTAL.inc(); // Increment publish error counter
+                                        OUTCOME_PUBLISH_ERRORS_TOTAL.inc();
                                     }
                                 }
                             }
                             Err(e) => {
                                 error!(error = %e, "Failed to serialize outcome");
-                                // Consider a metric for outcome serialization errors if needed
                             }
                         }
                     }
 
-                    // Acknowledge the original task message regardless of outcome or error
                     if let Err(ack_err) = delivery.ack(BasicAckOptions::default()).await {
                         error!(error = %ack_err, "Failed to ack task message");
-                        // Consider a metric for ACK errors if needed
                     }
 
-                    processing_timer.observe_duration(); // Observe processing duration
-                    ACTIVE_PROCESSING_TASKS.dec(); // Decrement gauge when task finishes
+                    processing_timer.observe_duration();
+                    ACTIVE_PROCESSING_TASKS.dec();
                 });
             }
             Err(e) => {
                 error!(error = %e, "Error receiving task message from consumer stream. Worker will stop.");
-                break;
+                // This error will propagate up from process_tasks if the loop breaks
+                return Err(PipelineError::QueueError(format!(
+                    "Consumer stream error: {}",
+                    e
+                )));
             }
         }
     }
+    // If the loop finishes (e.g. queue deleted, channel closed gracefully), it's not necessarily an error.
+    // Specific errors during consumption (like connection loss) would break the loop and return Err.
+    info!("Worker stopped consuming tasks (consumer stream ended).");
+    Ok(())
+}
 
-    info!("Worker stopped consuming tasks.");
+#[tokio::main]
+async fn main() -> Result<()> {
+    let args = Args::parse();
 
-    // Optional: Graceful shutdown of channels and connection
-    // Note: Depending on error handling, channels might already be closed.
-    // Use `close` method with appropriate code and reason.
-    // let _ = consume_channel.close(200, "Worker shutting down normally").await;
-    // let _ = publish_channel.close(200, "Worker shutting down normally").await;
-    // let _ = conn.close(200, "Worker shutting down normally").await;
+    // Initialize tracing subscriber
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")); // Default to info if RUST_LOG is not set
+    fmt::Subscriber::builder().with_env_filter(filter).init();
 
+    // Setup Prometheus Metrics Endpoint
+    if let Err(e) = setup_prometheus_metrics(args.metrics_port).await {
+        error!("Failed to start Prometheus metrics endpoint: {}", e);
+        // Depending on policy, just logging.
+    }
+
+    info!("Worker starting.");
+    info!(
+        "Loading pipeline configuration from: {}",
+        args.pipeline_config.display()
+    );
+    info!(
+        "Consuming from queue '{}', publishing outcomes to '{}' @ {}",
+        args.task_queue, args.results_queue, args.amqp_addr
+    );
+    info!("Prefetch count: {}", args.prefetch_count);
+
+    // Load and parse the pipeline configuration
+    let pipeline_config: PipelineConfig = load_pipeline_config(&args.pipeline_config)?;
+    let pipeline_steps = build_pipeline_from_config(&pipeline_config)?;
+    let executor = Arc::new(PipelineExecutor::new(pipeline_steps));
+
+    // Connect to RabbitMQ
+    let conn = connect_rabbitmq(&args.amqp_addr)
+        .await
+        .map_err(|e| PipelineError::QueueError(format!("Worker failed to connect: {}", e)))?;
+
+    // Process tasks
+    if let Err(e) = process_tasks(&args, &conn, executor).await {
+        error!("Error during task processing: {}", e);
+        // conn.close() could be called here if specific cleanup is needed,
+        // but often relying on drop is fine for error scenarios.
+        return Err(e);
+    }
+
+    // If process_tasks returns Ok, it means the consumer stream ended gracefully or an unrecoverable error within it was handled.
+    // The main function can now also be considered to have finished its primary work.
+    info!("Worker main function finished.");
     Ok(())
 }

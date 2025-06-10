@@ -104,6 +104,8 @@ pub struct C4BadWordsParams {
     pub fail_on_missing_language: bool,
     pub seed: Option<u64>,
     pub default_language: String,
+    #[serde(skip)] // This field will not be deserialized from YAML
+    pub cache_base_path: Option<std::path::PathBuf>,
 }
 
 // Parameters for the LangaugeDetectionFilter

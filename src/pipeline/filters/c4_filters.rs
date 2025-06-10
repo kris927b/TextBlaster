@@ -315,7 +315,11 @@ impl C4BadWordsFilter {
             }
         }
 
-        let cache_dir = PathBuf::from("data").join("c4_badwords");
+        let cache_dir = if let Some(ref path) = self.params.cache_base_path {
+            path.clone()
+        } else {
+            PathBuf::from("data").join("c4_badwords")
+        };
         let cache_file_path = cache_dir.join(lang);
 
         let words_content: String;
@@ -530,6 +534,7 @@ mod tests {
     use std::fs::{self, File}; // Ensure fs and File are imported
     use std::io::Write; // Ensure Write is imported
     use std::path::PathBuf; // Ensure PathBuf is imported
+    use tempfile::TempDir; // Import TempDir
 
     // Helper to create a TextDocument for tests
     fn create_test_doc(id: &str, content: &str) -> TextDocument {
@@ -806,23 +811,13 @@ mod tests {
         );
     }
 
-    fn setup_dummy_badwords_file(lang: &str, content: &str) {
-        let cache_dir = PathBuf::from("data").join("c4_badwords");
+    fn setup_dummy_badwords_file(temp_dir: &TempDir, lang: &str, content: &str) {
+        let cache_dir = temp_dir.path().to_path_buf();
         fs::create_dir_all(&cache_dir).expect("Failed to create dummy cache dir for test");
         let file_path = cache_dir.join(lang);
         let mut file =
             File::create(&file_path).expect("Failed to create dummy badwords file for test");
         writeln!(file, "{}", content).expect("Failed to write to dummy badwords file");
-    }
-
-    fn cleanup_dummy_badwords_file(lang: &str) {
-        let cache_dir = PathBuf::from("data").join("c4_badwords");
-        let file_path = cache_dir.join(lang);
-        if file_path.exists() {
-            fs::remove_file(&file_path).expect("Failed to remove dummy badwords file");
-        }
-        // Optionally remove cache_dir if empty, but be cautious
-        // For now, just remove the file.
     }
 
     // Helper to create C4BadWordsParams for tests
@@ -831,21 +826,30 @@ mod tests {
         fail_on_missing_language: bool,
         seed: Option<u64>,
         default_language: &str,
+        cache_base_path: Option<PathBuf>,
     ) -> C4BadWordsParams {
         C4BadWordsParams {
             keep_fraction,
             fail_on_missing_language,
             seed,
             default_language: default_language.to_string(),
+            cache_base_path,
         }
     }
 
     #[tokio::test]
     async fn test_badwords_document_passes_no_badwords() {
         let lang_for_test = "en";
-        setup_dummy_badwords_file(lang_for_test, "dummybadword\nexactphrase");
+        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+        setup_dummy_badwords_file(&temp_dir, lang_for_test, "dummybadword\nexactphrase");
 
-        let params = badwords_params(0.0, true, Some(123), "en");
+        let params = badwords_params(
+            0.0,
+            true,
+            Some(123),
+            "en",
+            Some(temp_dir.path().to_path_buf()),
+        );
         let filter = C4BadWordsFilter::new(params);
         let doc = create_test_doc("bw_pass_nobadwords", "This is a clean sentence.");
         let mut doc_with_lang = doc.clone();
@@ -860,15 +864,22 @@ mod tests {
             processed_doc.metadata.get("c4_badwords_filter_status"),
             Some(&"passed".to_string())
         );
-        cleanup_dummy_badwords_file(lang_for_test);
+        // temp_dir is dropped here, cleaning up the files
     }
 
     #[tokio::test]
     async fn test_badwords_document_filtered_has_badwords() {
         let lang_for_test = "en";
-        setup_dummy_badwords_file(lang_for_test, "dummybadword\nexactphrase");
+        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+        setup_dummy_badwords_file(&temp_dir, lang_for_test, "dummybadword\nexactphrase");
 
-        let params = badwords_params(0.0, true, Some(123), "xx"); // default_language can be anything if lang is set
+        let params = badwords_params(
+            0.0,
+            true,
+            Some(123),
+            "xx",
+            Some(temp_dir.path().to_path_buf()),
+        ); // default_language can be anything if lang is set
         let filter = C4BadWordsFilter::new(params);
         let doc = create_test_doc(
             "bw_filter_hasbadwords",
@@ -897,15 +908,22 @@ mod tests {
                 result
             );
         }
-        cleanup_dummy_badwords_file(lang_for_test);
+        // temp_dir is dropped here, cleaning up the files
     }
 
     #[tokio::test]
     async fn test_badwords_keep_fraction_keeps_doc() {
         let lang_for_test = "en";
-        setup_dummy_badwords_file(lang_for_test, "dummybadword\nexactphrase");
+        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+        setup_dummy_badwords_file(&temp_dir, lang_for_test, "dummybadword\nexactphrase");
 
-        let params = badwords_params(1.0, true, Some(123), "en"); // keep_fraction = 1.0
+        let params = badwords_params(
+            1.0,
+            true,
+            Some(123),
+            "en",
+            Some(temp_dir.path().to_path_buf()),
+        ); // keep_fraction = 1.0
         let filter = C4BadWordsFilter::new(params);
         let doc = create_test_doc("bw_keep_fraction", "Another dummybadword sentence.");
         let mut doc_with_lang = doc.clone();
@@ -924,15 +942,22 @@ mod tests {
             processed_doc.metadata.get("c4_badwords_filter_status"),
             Some(&"passed_kept_by_fraction".to_string())
         );
-        cleanup_dummy_badwords_file(lang_for_test);
+        // temp_dir is dropped here, cleaning up the files
     }
 
     #[tokio::test]
     async fn test_badwords_keep_fraction_filters_doc() {
         let lang_for_test = "en";
-        setup_dummy_badwords_file(lang_for_test, "dummybadword\nexactphrase");
+        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+        setup_dummy_badwords_file(&temp_dir, lang_for_test, "dummybadword\nexactphrase");
 
-        let params = badwords_params(0.0, true, Some(123), "en"); // keep_fraction = 0.0
+        let params = badwords_params(
+            0.0,
+            true,
+            Some(123),
+            "en",
+            Some(temp_dir.path().to_path_buf()),
+        ); // keep_fraction = 0.0
         let filter = C4BadWordsFilter::new(params);
         let doc = create_test_doc("bw_filter_fraction_zero", "A sentence with dummybadword.");
         let mut doc_with_lang = doc.clone();
@@ -950,12 +975,19 @@ mod tests {
         } else {
             panic!("Expected DocumentFiltered error. Result: {:?}", result);
         }
-        cleanup_dummy_badwords_file(lang_for_test);
+        // temp_dir is dropped here, cleaning up the files
     }
 
     #[tokio::test]
     async fn test_badwords_missing_language_fail() {
-        let params = badwords_params(0.0, true, Some(123), "en"); // fail_on_missing_language = true
+        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+        let params = badwords_params(
+            0.0,
+            true,
+            Some(123),
+            "en",
+            Some(temp_dir.path().to_path_buf()),
+        ); // fail_on_missing_language = true
         let filter = C4BadWordsFilter::new(params);
         // Using "zz" for which no badword list is set up (it's not in _BADWORDS_LANGS)
         let doc = create_test_doc("bw_missing_lang_fail", "Some text.");
@@ -982,11 +1014,19 @@ mod tests {
             );
         }
         // No cleanup needed as no file should have been created for "zz"
+        // temp_dir is dropped here, cleaning up the files
     }
 
     #[tokio::test]
     async fn test_badwords_missing_language_pass() {
-        let params = badwords_params(0.0, false, Some(123), "en"); // fail_on_missing_language = false
+        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+        let params = badwords_params(
+            0.0,
+            false,
+            Some(123),
+            "en",
+            Some(temp_dir.path().to_path_buf()),
+        ); // fail_on_missing_language = false
         let filter = C4BadWordsFilter::new(params);
         let doc = create_test_doc("bw_missing_lang_pass", "Some text.");
         let mut doc_with_lang = doc.clone();
@@ -1006,14 +1046,22 @@ mod tests {
             Some(&"passed_no_regex".to_string())
         );
         // No cleanup needed
+        // temp_dir is dropped here, cleaning up the files
     }
 
     #[tokio::test]
     async fn test_badwords_default_language_used() {
         let default_lang_for_test = "de";
-        setup_dummy_badwords_file(default_lang_for_test, "germanbadword");
+        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+        setup_dummy_badwords_file(&temp_dir, default_lang_for_test, "germanbadword");
         // "de" is in _BADWORDS_LANGS, so it will proceed to try and load the file.
-        let params = badwords_params(0.0, true, Some(123), default_lang_for_test);
+        let params = badwords_params(
+            0.0,
+            true,
+            Some(123),
+            default_lang_for_test,
+            Some(temp_dir.path().to_path_buf()),
+        );
         let filter = C4BadWordsFilter::new(params);
         let doc = create_test_doc("bw_default_lang", "Text with germanbadword.");
 
@@ -1028,15 +1076,22 @@ mod tests {
         } else {
             panic!("Expected DocumentFiltered error. Result: {:?}", result);
         }
-        cleanup_dummy_badwords_file(default_lang_for_test);
+        // temp_dir is dropped here, cleaning up the files
     }
 
     #[tokio::test]
     async fn test_badwords_default_language_clean() {
         let default_lang_for_test = "de";
-        setup_dummy_badwords_file(default_lang_for_test, "germanbadword");
+        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+        setup_dummy_badwords_file(&temp_dir, default_lang_for_test, "germanbadword");
 
-        let params = badwords_params(0.0, true, Some(123), default_lang_for_test);
+        let params = badwords_params(
+            0.0,
+            true,
+            Some(123),
+            default_lang_for_test,
+            Some(temp_dir.path().to_path_buf()),
+        );
         let filter = C4BadWordsFilter::new(params);
         let doc = create_test_doc("bw_default_lang_clean", "Clean text for default lang.");
 
@@ -1052,6 +1107,42 @@ mod tests {
             processed_doc.metadata.get("c4_badwords_filter_status"),
             Some(&"passed".to_string())
         );
-        cleanup_dummy_badwords_file(default_lang_for_test);
+        // temp_dir is dropped here, cleaning up the files
+    }
+
+    #[tokio::test]
+    async fn test_badwords_keep_fraction_deterministic_seed() {
+        let lang_for_test = "en";
+        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+        setup_dummy_badwords_file(&temp_dir, lang_for_test, "dummybadword");
+
+        // With seed 123, the first f32 generated by StdRng is ~0.6689348
+        // So, if keep_fraction is 0.5, 0.6689348 < 0.5 is FALSE.
+        // This means the document should be FILTERED.
+        let params = badwords_params(
+            0.5,
+            true,
+            Some(123),
+            "en",
+            Some(temp_dir.path().to_path_buf()),
+        ); // keep_fraction = 0.5
+        let filter = C4BadWordsFilter::new(params);
+        let doc = create_test_doc("bw_deterministic_seed", "A sentence with dummybadword.");
+        let mut doc_with_lang = doc.clone();
+        doc_with_lang
+            .metadata
+            .insert("language".to_string(), lang_for_test.to_string());
+
+        let result = filter.process(doc_with_lang).await;
+        assert!(
+            result.is_err(),
+            "Document should be filtered based on deterministic seed and keep_fraction"
+        );
+        if let Err(PipelineError::DocumentFiltered { reason, .. }) = result {
+            assert_eq!(reason, "document_removed_with_badwords");
+        } else {
+            panic!("Expected DocumentFiltered error. Result: {:?}", result);
+        }
+        // temp_dir is dropped here, cleaning up the files
     }
 }
