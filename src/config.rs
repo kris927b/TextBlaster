@@ -1,6 +1,7 @@
 // src/config.rs
 use crate::error::{PipelineError, Result};
 use serde::Deserialize;
+use std::collections::HashSet;
 use std::fs; // For reading the file
 use std::path::Path; // For path handling // Assuming these are your error types
 
@@ -32,7 +33,8 @@ pub enum StepConfig {
     GopherQualityFilter(GopherQualityParams),
     C4BadWordsFilter(C4BadWordsParams), // New
     LanguageDetectionFilter(LanguageDetectionParams),
-    // Add other filter/step types here as needed
+    FineWebQualityFilter(FineWebQualityFilterParams), // Renamed and new params struct
+                                                      // Add other filter/step types here as needed
 }
 
 impl StepConfig {
@@ -44,7 +46,8 @@ impl StepConfig {
             StepConfig::GopherQualityFilter(_) => "GopherQualityFilter",
             StepConfig::C4BadWordsFilter(_) => "C4BadWordsFilter", // New
             StepConfig::LanguageDetectionFilter(_) => "LanguageDetectionFilter",
-            // Add cases for other StepConfig variants here
+            StepConfig::FineWebQualityFilter(_) => "FineWebQualityFilter", // Renamed
+                                                                           // Add cases for other StepConfig variants here
         }
     }
 }
@@ -111,6 +114,19 @@ pub struct C4BadWordsParams {
 pub struct LanguageDetectionParams {
     pub min_confidence: f64,
     pub allowed_languages: Vec<String>,
+}
+
+// Parameters for the FineWebQualityFilter (new filter based on Python logic).
+#[derive(Deserialize, Debug, Clone, Default)] // Added Default for easier construction in worker
+pub struct FineWebQualityFilterParams {
+    pub line_punct_thr: f64,
+    pub line_punct_exclude_zero: bool,
+    pub stop_chars: Option<HashSet<char>>, // Will be converted to HashSet<char> in setup
+    pub short_line_thr: f64,
+    pub short_line_length: usize, // serde will handle u64 -> usize if value fits
+    pub char_duplicates_ratio: f64,
+    pub new_line_ratio: f64,
+    pub language: String,
 }
 
 // {{ Add the new function to load pipeline configuration }}

@@ -22,7 +22,11 @@ use lapin::{
     types::FieldTable,
 };
 use TextBlaster::pipeline::filters::{
-    C4BadWordsFilter, C4QualityFilter, GopherQualityFilter, GopherRepetitionFilter,
+    C4BadWordsFilter,
+    C4QualityFilter,
+    FineWebQualityFilter,
+    GopherQualityFilter, // Updated import
+    GopherRepetitionFilter,
     LanguageDetectionFilter,
 };
 use TextBlaster::utils::prometheus_metrics::*;
@@ -30,7 +34,7 @@ use TextBlaster::utils::utils::{connect_rabbitmq, setup_prometheus_metrics}; // 
 
 use std::path::PathBuf;
 use std::sync::Arc; // To share the executor across potential concurrent tasks
- // {{ Add serde_json for result serialization }}
+                    // {{ Add serde_json for result serialization }}
 use tracing::{debug, error, info, info_span, instrument, warn}; // Added tracing
 use tracing_subscriber::{fmt, EnvFilter}; // Added tracing_subscriber
 
@@ -133,6 +137,21 @@ fn build_pipeline_from_config(config: &PipelineConfig) -> Result<Vec<Box<dyn Pro
                 debug!(params = ?params, "Adding C4BadWordsFilter");
                 Box::new(C4BadWordsFilter::new(params.clone()))
             }
+            StepConfig::FineWebQualityFilter(params) => {
+                // Updated variant name
+                debug!(params = ?params, "Adding FineWebQualityFilterImpl");
+
+                Box::new(FineWebQualityFilter::new(
+                    params.line_punct_thr,
+                    params.line_punct_exclude_zero,
+                    params.short_line_thr,
+                    params.short_line_length,
+                    params.char_duplicates_ratio,
+                    params.new_line_ratio,
+                    params.language.clone(),
+                    params.stop_chars.clone(),
+                ))
+            }
         };
         steps.push(step);
         info!("Added step: {}", step_config.name());
@@ -220,7 +239,7 @@ async fn process_tasks(
                 let executor_clone = Arc::clone(&executor);
                 let publish_channel_clone = publish_channel.clone();
                 let results_queue_name = args.results_queue.clone();
-                let worker_id_tag = consumer_tag.clone(); // Use the specific consumer_tag for this worker instance
+                // let worker_id_tag = consumer_tag.clone(); // Use the specific consumer_tag for this worker instance
 
                 tokio::spawn(async move {
                     ACTIVE_PROCESSING_TASKS.inc();
@@ -243,22 +262,34 @@ async fn process_tasks(
                                     TASKS_PROCESSED_TOTAL.inc();
                                     Some(ProcessingOutcome::Success(processed_doc))
                                 }
-                                Err(pipeline_error) => match pipeline_error {
-                                    PipelineError::DocumentFiltered { document, reason } => {
-                                        info!(filtered_doc_id = %document.id, %reason, "Document was filtered");
-                                        TASKS_FILTERED_TOTAL.inc();
-                                        Some(ProcessingOutcome::Filtered { document, reason })
+                                Err(pipeline_error) => {
+                                    if let PipelineError::StepError { step_name, source } =
+                                        pipeline_error
+                                    {
+                                        match *source {
+                                            PipelineError::DocumentFiltered {
+                                                document,
+                                                reason,
+                                            } => {
+                                                info!(filtered_doc_id = %document.id, %step_name, %reason, "Document was filtered");
+                                                TASKS_FILTERED_TOTAL.inc(); // Increment filtered counter
+                                                Some(ProcessingOutcome::Filtered {
+                                                    document,
+                                                    reason,
+                                                })
+                                            }
+                                            other_error => {
+                                                error!(%step_name, error = %other_error, "Pipeline step failed");
+                                                TASKS_FAILED_TOTAL.inc(); // Increment failed counter
+                                                None // Don't send outcome for pipeline errors
+                                            }
+                                        }
+                                    } else {
+                                        error!(error = %pipeline_error, "Unexpected pipeline error");
+                                        TASKS_FAILED_TOTAL.inc(); // Increment failed counter
+                                        None // Don't send outcome
                                     }
-                                    other_error => {
-                                        error!(error = %other_error, "Pipeline execution failed");
-                                        TASKS_FAILED_TOTAL.inc();
-                                        Some(ProcessingOutcome::Error {
-                                            document: doc,
-                                            error_message: other_error.to_string(),
-                                            worker_id: worker_id_tag,
-                                        })
-                                    }
-                                },
+                                }
                             }
                         }
                         Err(e) => {

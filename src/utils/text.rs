@@ -1,9 +1,9 @@
 // Text utils
-use itertools::Itertools;
+// use itertools::Itertools; // Removed unused import
 
 use icu::segmenter::{SentenceSegmenter, WordSegmenter};
 use once_cell::sync::Lazy;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 //Danish Stopwords
 pub const DANISH_STOP_WORDS: &[&str] = &[
@@ -101,15 +101,160 @@ pub fn split_into_sentences(text: &str) -> Vec<&str> {
 }
 
 pub fn split_into_words(text: &str) -> Vec<&str> {
-    let segmenter = WordSegmenter::new_auto();
+    if text.is_empty() {
+        return Vec::new();
+    }
+    let segmenter = WordSegmenter::new_auto(); // No need for mut if not calling methods on it post-iterator creation
+    let mut words = Vec::new();
+    let mut prev_break = 0;
 
-    segmenter
-        .segment_str(text)
-        .iter_with_word_type()
-        .tuple_windows()
-        .filter(|(_, (_, segment_type))| segment_type.is_word_like())
-        .map(|((i, _), (j, _))| &text[i..j])
-        .collect()
+    // segment_str() returns an iterator over break points (usize byte offsets).
+    // A segment is the text between two consecutive break points.
+    let mut breaks_iter = segmenter.segment_str(text).peekable();
+
+    while let Some(current_break) = breaks_iter.next() {
+        if current_break > prev_break {
+            let segment_candidate = &text[prev_break..current_break];
+
+            // Trim whitespace first to handle cases like "word " before punctuation check
+            let trimmed_segment = segment_candidate.trim();
+
+            if !trimmed_segment.is_empty() {
+                // Check if the trimmed segment consists *only* of punctuation.
+                // The ICU segmenter should ideally segment "word." as "word" (word-like) and "." (not).
+                // And "..." as not word-like.
+                // If the segmenter gives us "word.", we need to decide if that's a "word".
+                // The current UAX #29 definition of a word often includes trailing punctuation within the segment
+                // if `WordSegmenter::is_word_like` was true for it.
+                // The `WordSegmenter` should correctly identify "mid" and "dle" in "mid...dle" as word segments,
+                // and "..." as a non-word segment.
+
+                // The `segment_str` iterator itself only gives break points.
+                // The boolean from the original code `(usize, bool)` is what we are missing.
+                // Let's assume the segmenter correctly breaks "word" from "..." from "dle".
+                // Then we just need to check if the segment is non-empty after light trimming.
+                // A segment like "..." would be correctly identified if it's not empty and all its chars are punctuation.
+
+                let mut contains_word_char = false;
+                for ch in trimmed_segment.chars() {
+                    if !PUNCTUATION.contains(&ch) && !ch.is_whitespace() {
+                        // Check against our PUNCTUATION set
+                        contains_word_char = true;
+                        break;
+                    }
+                }
+
+                if contains_word_char {
+                    // If it contains at least one non-punctuation/non-whitespace char, consider it a word.
+                    // Further trimming of just punctuation might be desired depending on exact requirements.
+                    // For "mid...dle", we expect segments "mid", "...", "dle".
+                    // "mid" -> contains_word_char = true.
+                    // "..." -> contains_word_char = false (if all '.' are in PUNCTUATION).
+                    // "dle" -> contains_word_char = true.
+                    // This seems like a reasonable heuristic if `is_word_like` is not available directly with the offset.
+                    words.push(trimmed_segment);
+                }
+            }
+        }
+        prev_break = current_break;
+    }
+
+    // Process the last segment (from the last break to the end of the string)
+    if text.len() > prev_break {
+        let segment_candidate = &text[prev_break..text.len()];
+        let trimmed_segment = segment_candidate.trim();
+        if !trimmed_segment.is_empty() {
+            let mut contains_word_char = false;
+            for ch in trimmed_segment.chars() {
+                if !PUNCTUATION.contains(&ch) && !ch.is_whitespace() {
+                    contains_word_char = true;
+                    break;
+                }
+            }
+            if contains_word_char {
+                words.push(trimmed_segment);
+            }
+        }
+    }
+    words
+}
+
+/// Generate all contiguous n-grams of words, joined by spaces.
+pub fn get_n_grams(words: &[&str], n: usize) -> Vec<String> {
+    // if n == 0 { return Vec::new(); } // Original guard
+    // words.windows(n).map(|window| window.join(" ")).collect()
+
+    // Try wrapping the call instead of returning early
+    if n > 0 {
+        words.windows(n).map(|window| window.join(" ")).collect()
+    } else {
+        Vec::new() // Return empty vec if n is 0
+    }
+}
+
+/// Count duplicate elements and the total length of duplicate elements in characters.
+pub fn find_duplicates(items: &[String]) -> (usize, usize) {
+    let mut unique = HashSet::new();
+    let mut dup_chars = 0;
+    let mut dup_elems = 0;
+    for elem in items {
+        if !unique.insert(elem.clone()) {
+            dup_chars += elem.len();
+            dup_elems += 1;
+        }
+    }
+    (dup_elems, dup_chars)
+}
+
+/// Find the most frequent element and return its length multiplied by its count.
+pub fn find_top_duplicate(items: &[String]) -> usize {
+    if items.is_empty() {
+        return 0;
+    }
+    let mut counter: HashMap<String, usize> = HashMap::new();
+    for elem in items {
+        *counter.entry(elem.to_string()).or_insert(0) += 1;
+    }
+
+    let max_count = counter.values().max().copied().unwrap_or(0);
+
+    if max_count <= 1 {
+        return 0; // No duplicates found
+    }
+
+    // Find the maximum length contribution (len * count) among all items with the max_count.
+    let mut max_len_contribution = 0;
+    for (gram_str, count) in counter.iter() {
+        if *count == max_count {
+            let current_contribution = gram_str.len() * max_count;
+            if current_contribution > max_len_contribution {
+                max_len_contribution = current_contribution;
+            }
+        }
+    }
+
+    max_len_contribution
+}
+
+/// Slide over words in steps, summing lengths of duplicate n-grams (concatenated without spaces).
+pub fn find_all_duplicate(words: &[&str], n: usize) -> usize {
+    if n == 0 || words.len() < n {
+        return 0;
+    }
+    let mut unique = HashSet::new();
+    let mut repeated_chars = 0;
+    let mut idx = 0;
+    let n_words = words.len();
+    while idx + n <= n_words {
+        let n_gram = words[idx..idx + n].concat();
+        if !unique.insert(n_gram.clone()) {
+            repeated_chars += n_gram.len();
+            idx += n;
+        } else {
+            idx += 1;
+        }
+    }
+    repeated_chars
 }
 
 #[cfg(test)]
