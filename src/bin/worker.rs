@@ -32,9 +32,9 @@ use TextBlaster::pipeline::filters::{
 use TextBlaster::utils::prometheus_metrics::*;
 use TextBlaster::utils::utils::{connect_rabbitmq, setup_prometheus_metrics}; // Using shared setup_prometheus_metrics // Import shared metrics
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc; // To share the executor across potential concurrent tasks
- // {{ Add serde_json for result serialization }}
+                    // {{ Add serde_json for result serialization }}
 use tracing::{debug, error, info, info_span, instrument, warn}; // Added tracing
 use tracing_subscriber::{fmt, EnvFilter}; // Added tracing_subscriber
 
@@ -141,52 +141,16 @@ fn build_pipeline_from_config(config: &PipelineConfig) -> Result<Vec<Box<dyn Pro
                 // Updated variant name
                 debug!(params = ?params, "Adding FineWebQualityFilterImpl");
 
-                let mut config_map = serde_json::Map::new();
-                if let Some(val) = params.line_punct_thr {
-                    config_map.insert("line_punct_thr".to_string(), serde_json::json!(val));
-                }
-                if let Some(val) = params.line_punct_exclude_zero {
-                    config_map.insert(
-                        "line_punct_exclude_zero".to_string(),
-                        serde_json::Value::Bool(val),
-                    );
-                }
-                if let Some(ref val_vec) = params.stop_chars {
-                    let json_arr = val_vec
-                        .iter()
-                        .map(|s| serde_json::Value::String(s.clone()))
-                        .collect();
-                    config_map.insert("stop_chars".to_string(), serde_json::Value::Array(json_arr));
-                }
-                if let Some(val) = params.short_line_thr {
-                    config_map.insert("short_line_thr".to_string(), serde_json::json!(val));
-                }
-                if let Some(val) = params.short_line_length {
-                    config_map.insert("short_line_length".to_string(), serde_json::json!(val));
-                }
-                if let Some(val) = params.char_duplicates_ratio {
-                    config_map.insert("char_duplicates_ratio".to_string(), serde_json::json!(val));
-                }
-                if let Some(val) = params.new_line_ratio {
-                    config_map.insert("new_line_ratio".to_string(), serde_json::json!(val));
-                }
-                if let Some(ref val) = params.language {
-                    config_map.insert(
-                        "language".to_string(),
-                        serde_json::Value::String(val.clone()),
-                    );
-                }
-
-                let filter_config_value = if config_map.is_empty() {
-                    None
-                } else {
-                    Some(serde_json::Value::Object(config_map))
-                };
-
-                Box::new(
-                    FineWebQualityFilter::setup(Path::new(""), filter_config_value.as_ref()) // Use new struct and setup
-                        .expect("Failed to setup FineWebQualityFilter"),
-                )
+                Box::new(FineWebQualityFilter::new(
+                    params.line_punct_thr,
+                    params.line_punct_exclude_zero,
+                    params.short_line_thr,
+                    params.short_line_length,
+                    params.char_duplicates_ratio,
+                    params.new_line_ratio,
+                    params.language.clone(),
+                    params.stop_chars.clone(),
+                ))
             }
         };
         steps.push(step);
@@ -275,7 +239,7 @@ async fn process_tasks(
                 let executor_clone = Arc::clone(&executor);
                 let publish_channel_clone = publish_channel.clone();
                 let results_queue_name = args.results_queue.clone();
-                let worker_id_tag = consumer_tag.clone(); // Use the specific consumer_tag for this worker instance
+                // let worker_id_tag = consumer_tag.clone(); // Use the specific consumer_tag for this worker instance
 
                 tokio::spawn(async move {
                     ACTIVE_PROCESSING_TASKS.inc();
@@ -298,22 +262,34 @@ async fn process_tasks(
                                     TASKS_PROCESSED_TOTAL.inc();
                                     Some(ProcessingOutcome::Success(processed_doc))
                                 }
-                                Err(pipeline_error) => match pipeline_error {
-                                    PipelineError::DocumentFiltered { document, reason } => {
-                                        info!(filtered_doc_id = %document.id, %reason, "Document was filtered");
-                                        TASKS_FILTERED_TOTAL.inc();
-                                        Some(ProcessingOutcome::Filtered { document, reason })
+                                Err(pipeline_error) => {
+                                    if let PipelineError::StepError { step_name, source } =
+                                        pipeline_error
+                                    {
+                                        match *source {
+                                            PipelineError::DocumentFiltered {
+                                                document,
+                                                reason,
+                                            } => {
+                                                info!(filtered_doc_id = %document.id, %step_name, %reason, "Document was filtered");
+                                                TASKS_FILTERED_TOTAL.inc(); // Increment filtered counter
+                                                Some(ProcessingOutcome::Filtered {
+                                                    document,
+                                                    reason,
+                                                })
+                                            }
+                                            other_error => {
+                                                error!(%step_name, error = %other_error, "Pipeline step failed");
+                                                TASKS_FAILED_TOTAL.inc(); // Increment failed counter
+                                                None // Don't send outcome for pipeline errors
+                                            }
+                                        }
+                                    } else {
+                                        error!(error = %pipeline_error, "Unexpected pipeline error");
+                                        TASKS_FAILED_TOTAL.inc(); // Increment failed counter
+                                        None // Don't send outcome
                                     }
-                                    other_error => {
-                                        error!(error = %other_error, "Pipeline execution failed");
-                                        TASKS_FAILED_TOTAL.inc();
-                                        Some(ProcessingOutcome::Error {
-                                            document: doc,
-                                            error_message: other_error.to_string(),
-                                            worker_id: worker_id_tag,
-                                        })
-                                    }
-                                },
+                                }
                             }
                         }
                         Err(e) => {

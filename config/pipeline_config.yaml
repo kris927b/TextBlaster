@@ -65,8 +65,17 @@ pipeline:
         "vore", "vores", "vær", "være", "været", "øh"
     ]
 
-  - type: C4BadWordsFilter
-    keep_fraction: 0.1 # Keep 10% of documents with bad words
-    fail_on_missing_language: false # Continue if a language's bad word list is not found
-    seed: 42 # Optional seed for reproducibility
-    default_language: "en" # Default language if not specified in document metadata
+  # - type: C4BadWordsFilter
+  #   keep_fraction: 0.1 # Keep 10% of documents with bad words
+  #   fail_on_missing_language: false # Continue if a language's bad word list is not found
+  #   seed: 42 # Optional seed for reproducibility
+  #   default_language: "en" # Default language if not specified in document metadata
+
+  - type: FineWebQualityFilter
+    line_punct_thr: 0.12
+    line_punct_exclude_zero: false
+    short_line_thr: 0.67
+    short_line_length: 30
+    char_duplicates_ratio: 0.01
+    new_line_ratio: 0.3
+    language: "da"

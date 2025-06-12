@@ -1,6 +1,7 @@
 // src/config.rs
 use crate::error::{PipelineError, Result};
 use serde::Deserialize;
+use std::collections::HashSet;
 use std::fs; // For reading the file
 use std::path::Path; // For path handling // Assuming these are your error types
 
@@ -118,22 +119,14 @@ pub struct LanguageDetectionParams {
 // Parameters for the FineWebQualityFilter (new filter based on Python logic).
 #[derive(Deserialize, Debug, Clone, Default)] // Added Default for easier construction in worker
 pub struct FineWebQualityFilterParams {
-    #[serde(default)] // Ensure that if the key is missing, it uses Option::None
-    pub line_punct_thr: Option<f64>,
-    #[serde(default)]
-    pub line_punct_exclude_zero: Option<bool>,
-    #[serde(default)]
-    pub stop_chars: Option<Vec<String>>, // Will be converted to HashSet<char> in setup
-    #[serde(default)]
-    pub short_line_thr: Option<f64>,
-    #[serde(default)]
-    pub short_line_length: Option<usize>, // serde will handle u64 -> usize if value fits
-    #[serde(default)]
-    pub char_duplicates_ratio: Option<f64>,
-    #[serde(default)]
-    pub new_line_ratio: Option<f64>,
-    #[serde(default)]
-    pub language: Option<String>,
+    pub line_punct_thr: f64,
+    pub line_punct_exclude_zero: bool,
+    pub stop_chars: Option<HashSet<char>>, // Will be converted to HashSet<char> in setup
+    pub short_line_thr: f64,
+    pub short_line_length: usize, // serde will handle u64 -> usize if value fits
+    pub char_duplicates_ratio: f64,
+    pub new_line_ratio: f64,
+    pub language: String,
 }
 
 // {{ Add the new function to load pipeline configuration }}

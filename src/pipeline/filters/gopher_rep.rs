@@ -5,85 +5,9 @@ use std::collections::{HashMap, HashSet};
 use crate::data_model::TextDocument;
 use crate::error::{PipelineError, Result}; // Use your Result type alias
 use crate::executor::ProcessingStep; // Assuming ProcessingStep trait is here or imported
-use crate::utils::text::split_into_words;
-
-/// Generate all contiguous n-grams of words, joined by spaces.
-fn get_n_grams(words: &[&str], n: usize) -> Vec<String> {
-    // if n == 0 { return Vec::new(); } // Original guard
-    // words.windows(n).map(|window| window.join(" ")).collect()
-
-    // Try wrapping the call instead of returning early
-    if n > 0 {
-        words.windows(n).map(|window| window.join(" ")).collect()
-    } else {
-        Vec::new() // Return empty vec if n is 0
-    }
-}
-
-/// Count duplicate elements and the total length of duplicate elements in characters.
-fn find_duplicates(items: &[String]) -> (usize, usize) {
-    let mut unique = HashSet::new();
-    let mut dup_chars = 0;
-    let mut dup_elems = 0;
-    for elem in items {
-        if !unique.insert(elem.clone()) {
-            dup_chars += elem.len();
-            dup_elems += 1;
-        }
-    }
-    (dup_elems, dup_chars)
-}
-
-/// Find the most frequent element and return its length multiplied by its count.
-fn find_top_duplicate(items: &[String]) -> usize {
-    if items.is_empty() {
-        return 0;
-    }
-    let mut counter: HashMap<String, usize> = HashMap::new();
-    for elem in items {
-        *counter.entry(elem.to_string()).or_insert(0) += 1;
-    }
-
-    let max_count = counter.values().max().copied().unwrap_or(0);
-
-    if max_count <= 1 {
-        return 0; // No duplicates found
-    }
-
-    // Find the maximum length contribution (len * count) among all items with the max_count.
-    let mut max_len_contribution = 0;
-    for (gram_str, count) in counter.iter() {
-        if *count == max_count {
-            let current_contribution = gram_str.len() * max_count;
-            if current_contribution > max_len_contribution {
-                max_len_contribution = current_contribution;
-            }
-        }
-    }
-
-    max_len_contribution
-}
-
-/// Slide over words in steps, summing lengths of duplicate n-grams (concatenated without spaces).
-fn find_all_duplicate(words: &[&str], n: usize) -> usize {
-    if n == 0 || words.len() < n {
-        return 0;
-    }
-    let mut unique = HashSet::new();
-    let mut repeated_chars = 0;
-    let mut idx = 0;
-    let n_words = words.len();
-    while idx + n <= n_words {
-        let n_gram = words[idx..idx + n].concat();
-        if !unique.insert(n_gram.clone()) {
-            repeated_chars += n_gram.len();
-            idx += n;
-        } else {
-            idx += 1;
-        }
-    }
-    repeated_chars
-}
+use crate::utils::text::{
+    find_all_duplicate, find_duplicates, find_top_duplicate, get_n_grams, split_into_words,
+};
 
 /// A filter that detects repeated lines, paragraphs, and n-grams in a document.
 pub struct GopherRepetitionFilter {

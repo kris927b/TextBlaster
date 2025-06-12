@@ -3,7 +3,7 @@
 
 use icu::segmenter::{SentenceSegmenter, WordSegmenter};
 use once_cell::sync::Lazy;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 //Danish Stopwords
 pub const DANISH_STOP_WORDS: &[&str] = &[
@@ -137,7 +137,8 @@ pub fn split_into_words(text: &str) -> Vec<&str> {
 
                 let mut contains_word_char = false;
                 for ch in trimmed_segment.chars() {
-                    if !PUNCTUATION.contains(&ch) && !ch.is_whitespace() { // Check against our PUNCTUATION set
+                    if !PUNCTUATION.contains(&ch) && !ch.is_whitespace() {
+                        // Check against our PUNCTUATION set
                         contains_word_char = true;
                         break;
                     }
@@ -178,40 +179,83 @@ pub fn split_into_words(text: &str) -> Vec<&str> {
     words
 }
 
-/// Finds duplicate characters in a list of lines.
-///
-/// Args:
-///   lines: A slice of strings, where each string is a line of text.
-///
-/// Returns:
-///   A tuple `(usize, usize)` where the first element is the count of
-///   repeated characters (sum of (count - 1) for each char with count > 1),
-///   and the second element is the total number of characters in the text
-///   (ignoring newlines, as if all lines were joined).
-pub fn find_duplicates(lines: &[impl AsRef<str>]) -> (usize, usize) {
-    use std::collections::HashMap;
+/// Generate all contiguous n-grams of words, joined by spaces.
+pub fn get_n_grams(words: &[&str], n: usize) -> Vec<String> {
+    // if n == 0 { return Vec::new(); } // Original guard
+    // words.windows(n).map(|window| window.join(" ")).collect()
 
-    let mut character_counts: HashMap<char, usize> = HashMap::new();
-    let mut total_chars = 0;
-
-    for line_ref in lines {
-        let line = line_ref.as_ref();
-        for ch in line.chars() {
-            *character_counts.entry(ch).or_insert(0) += 1;
-            total_chars += 1;
-        }
+    // Try wrapping the call instead of returning early
+    if n > 0 {
+        words.windows(n).map(|window| window.join(" ")).collect()
+    } else {
+        Vec::new() // Return empty vec if n is 0
     }
-
-    let mut repeated_chars_count = 0;
-    for count in character_counts.values() {
-        if *count > 1 {
-            repeated_chars_count += *count - 1;
-        }
-    }
-
-    (repeated_chars_count, total_chars)
 }
 
+/// Count duplicate elements and the total length of duplicate elements in characters.
+pub fn find_duplicates(items: &[String]) -> (usize, usize) {
+    let mut unique = HashSet::new();
+    let mut dup_chars = 0;
+    let mut dup_elems = 0;
+    for elem in items {
+        if !unique.insert(elem.clone()) {
+            dup_chars += elem.len();
+            dup_elems += 1;
+        }
+    }
+    (dup_elems, dup_chars)
+}
+
+/// Find the most frequent element and return its length multiplied by its count.
+pub fn find_top_duplicate(items: &[String]) -> usize {
+    if items.is_empty() {
+        return 0;
+    }
+    let mut counter: HashMap<String, usize> = HashMap::new();
+    for elem in items {
+        *counter.entry(elem.to_string()).or_insert(0) += 1;
+    }
+
+    let max_count = counter.values().max().copied().unwrap_or(0);
+
+    if max_count <= 1 {
+        return 0; // No duplicates found
+    }
+
+    // Find the maximum length contribution (len * count) among all items with the max_count.
+    let mut max_len_contribution = 0;
+    for (gram_str, count) in counter.iter() {
+        if *count == max_count {
+            let current_contribution = gram_str.len() * max_count;
+            if current_contribution > max_len_contribution {
+                max_len_contribution = current_contribution;
+            }
+        }
+    }
+
+    max_len_contribution
+}
+
+/// Slide over words in steps, summing lengths of duplicate n-grams (concatenated without spaces).
+pub fn find_all_duplicate(words: &[&str], n: usize) -> usize {
+    if n == 0 || words.len() < n {
+        return 0;
+    }
+    let mut unique = HashSet::new();
+    let mut repeated_chars = 0;
+    let mut idx = 0;
+    let n_words = words.len();
+    while idx + n <= n_words {
+        let n_gram = words[idx..idx + n].concat();
+        if !unique.insert(n_gram.clone()) {
+            repeated_chars += n_gram.len();
+            idx += n;
+        } else {
+            idx += 1;
+        }
+    }
+    repeated_chars
+}
 
 #[cfg(test)]
 mod tests {
