@@ -2,7 +2,9 @@
 
 use clap::Parser;
 use futures::StreamExt; // For processing the consumer stream
-                        // {{ Use the new load_pipeline_config function }}
+use indicatif::{ProgressBar, ProgressStyle}; // Added for progress bar
+use std::time::{Duration, Instant}; // Added for progress bar speed calculation
+                                    // {{ Use the new load_pipeline_config function }}
 use TextBlaster::config::{load_pipeline_config, PipelineConfig, StepConfig}; // Added config imports and load_pipeline_config
 use TextBlaster::data_model::{ProcessingOutcome, TextDocument}; // Updated import
 use TextBlaster::error::{PipelineError, Result}; // Use the library's Result type
@@ -36,7 +38,8 @@ use std::path::PathBuf;
 use std::sync::Arc; // To share the executor across potential concurrent tasks
                     // {{ Add serde_json for result serialization }}
 use tracing::{debug, error, info, info_span, instrument, warn}; // Added tracing
-use tracing_subscriber::{fmt, EnvFilter}; // Added tracing_subscriber
+use tracing_subscriber::{fmt, EnvFilter, layer::SubscriberExt, util::SubscriberInitExt}; // Added tracing_subscriber
+use tracing_appender; // Added for file logging
 
 // Define command-line arguments
 #[derive(Parser, Debug)]
@@ -366,14 +369,100 @@ async fn main() -> Result<()> {
     let args = Args::parse();
 
     // Initialize tracing subscriber
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")); // Default to info if RUST_LOG is not set
-    fmt::Subscriber::builder().with_env_filter(filter).init();
+    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")); // Default to info if RUST_LOG is not set
+
+    // Setup file logging
+    let file_appender = match tracing_appender::rolling::daily(".", "worker.log") {
+        Ok(appender) => appender,
+        Err(e) => {
+            eprintln!("Failed to create file appender for worker.log: {}", e);
+            // Fallback or exit if necessary, here we'll just proceed without file logging
+            // Or, to be more robust, you might want to handle this more gracefully
+            // For now, let's print an error and continue without file logging.
+            // In a production scenario, you might want to panic or use a different fallback.
+            return Err(PipelineError::ConfigurationError(format!(
+                "Failed to initialize file logger: {}",
+                e
+            )));
+        }
+    };
+
+    let (non_blocking_file_writer, _guard) = tracing_appender::non_blocking(file_appender);
+
+    // Configure the console layer
+    let console_layer = fmt::layer()
+        .with_writer(std::io::stdout) // Write to stdout
+        .with_filter(EnvFilter::new("info")); // Only info and above for console
+
+
+    // Configure the file logging layer
+    let file_layer = fmt::layer()
+        .with_writer(non_blocking_file_writer) // Write to the file
+        .with_ansi(false); // No ANSI colors in files
+
+    // Combine layers and initialize the global subscriber
+    tracing_subscriber::registry()
+        .with(env_filter) // Global filter
+        .with(console_layer)
+        .with(file_layer)
+        .try_init()
+        .map_err(|e| PipelineError::ConfigurationError(format!("Failed to initialize tracing subscriber: {}", e)))?;
+
 
     // Setup Prometheus Metrics Endpoint
     if let Err(e) = setup_prometheus_metrics(args.metrics_port).await {
         error!("Failed to start Prometheus metrics endpoint: {}", e);
         // Depending on policy, just logging.
     }
+
+    // --- Progress Bar Setup ---
+    let pb = ProgressBar::new_spinner();
+    pb.set_style(
+        ProgressStyle::default_spinner()
+            .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ ")
+            .template("{spinner:.green} {msg}")
+            .expect("Failed to create progress style")
+    );
+    pb.enable_steady_tick(Duration::from_millis(100));
+    pb.set_message("Initializing...");
+
+    let progress_updater_handle = tokio::spawn({
+        let pb_clone = pb.clone();
+        async move {
+            let mut last_processed_count = 0.0;
+            let mut last_update_time = Instant::now();
+            loop {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+
+                let current_processed_total = TASKS_PROCESSED_TOTAL.get();
+                let current_filtered_total = TASKS_FILTERED_TOTAL.get();
+                // Sum of pipeline errors and deserialization errors for a total error count
+                let current_errored_total = TASKS_FAILED_TOTAL.get() + TASK_DESERIALIZATION_ERRORS_TOTAL.get();
+
+                let now = Instant::now();
+                let duration_since_last_update = (now - last_update_time).as_secs_f64();
+                let processed_since_last = current_processed_total - last_processed_count;
+
+                let speed = if duration_since_last_update > 0.0 {
+                    processed_since_last / duration_since_last_update
+                } else {
+                    0.0
+                };
+
+                pb_clone.set_message(format!(
+                    "Processed: {}, Filtered: {}, Errored: {} | Speed: {:.2} docs/sec",
+                    current_processed_total,
+                    current_filtered_total,
+                    current_errored_total,
+                    speed
+                ));
+
+                last_processed_count = current_processed_total;
+                last_update_time = now;
+            }
+        }
+    });
+    // --- End Progress Bar Setup ---
 
     info!("Worker starting.");
     info!(
@@ -397,15 +486,20 @@ async fn main() -> Result<()> {
         .map_err(|e| PipelineError::QueueError(format!("Worker failed to connect: {}", e)))?;
 
     // Process tasks
-    if let Err(e) = process_tasks(&args, &conn, executor).await {
+    let task_processing_result = process_tasks(&args, &conn, executor).await;
+
+    // Stop the progress bar and the updater task
+    pb.finish_with_message("Processing finished or interrupted."); // Updated message
+    progress_updater_handle.abort(); // Stop the updater task
+
+    if let Err(e) = task_processing_result {
         error!("Error during task processing: {}", e);
         // conn.close() could be called here if specific cleanup is needed,
         // but often relying on drop is fine for error scenarios.
         return Err(e);
     }
 
-    // If process_tasks returns Ok, it means the consumer stream ended gracefully or an unrecoverable error within it was handled.
-    // The main function can now also be considered to have finished its primary work.
-    info!("Worker main function finished.");
+    // If process_tasks returns Ok, it means the consumer stream ended gracefully.
+    info!("Worker main function finished successfully.");
     Ok(())
 }
