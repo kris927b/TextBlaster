@@ -34,7 +34,8 @@ pub enum StepConfig {
     C4BadWordsFilter(C4BadWordsParams), // New
     LanguageDetectionFilter(LanguageDetectionParams),
     FineWebQualityFilter(FineWebQualityFilterParams), // Renamed and new params struct
-                                                      // Add other filter/step types here as needed
+    TokenCounter(TokenCounterParams),
+    // Add other filter/step types here as needed
 }
 
 impl StepConfig {
@@ -47,7 +48,7 @@ impl StepConfig {
             StepConfig::C4BadWordsFilter(_) => "C4BadWordsFilter", // New
             StepConfig::LanguageDetectionFilter(_) => "LanguageDetectionFilter",
             StepConfig::FineWebQualityFilter(_) => "FineWebQualityFilter", // Renamed
-                                                                           // Add cases for other StepConfig variants here
+            StepConfig::TokenCounter(_) => "TokenCounter", // Add cases for other StepConfig variants here
         }
     }
 }
@@ -127,6 +128,12 @@ pub struct FineWebQualityFilterParams {
     pub char_duplicates_ratio: f64,
     pub new_line_ratio: f64,
     pub language: String,
+}
+
+// Parameters for the TokenCounter
+#[derive(Deserialize, Debug, Clone)]
+pub struct TokenCounterParams {
+    pub tokenizer_name: String,
 }
 
 // {{ Add the new function to load pipeline configuration }}
