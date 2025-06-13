@@ -79,3 +79,6 @@ pipeline:
     char_duplicates_ratio: 0.01
     new_line_ratio: 0.3
     language: "da"
+
+  - type: TokenCounter
+    tokenizer_name: "gpt2"
