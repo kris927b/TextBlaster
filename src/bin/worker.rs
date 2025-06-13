@@ -29,6 +29,7 @@ use TextBlaster::pipeline::filters::{
     GopherRepetitionFilter,
     LanguageDetectionFilter,
 };
+use TextBlaster::pipeline::token::{self, TokenCounter};
 use TextBlaster::utils::prometheus_metrics::*;
 use TextBlaster::utils::utils::{connect_rabbitmq, setup_prometheus_metrics}; // Using shared setup_prometheus_metrics // Import shared metrics
 
@@ -139,7 +140,7 @@ fn build_pipeline_from_config(config: &PipelineConfig) -> Result<Vec<Box<dyn Pro
             }
             StepConfig::FineWebQualityFilter(params) => {
                 // Updated variant name
-                debug!(params = ?params, "Adding FineWebQualityFilterImpl");
+                debug!(params = ?params, "Adding FineWebQualityFilter");
 
                 Box::new(FineWebQualityFilter::new(
                     params.line_punct_thr,
@@ -151,6 +152,14 @@ fn build_pipeline_from_config(config: &PipelineConfig) -> Result<Vec<Box<dyn Pro
                     params.language.clone(),
                     params.stop_chars.clone(),
                 ))
+            }
+            StepConfig::TokenCounter(params) => {
+                debug!(params=?params, "Adding TokenCounter");
+                let token_step = TokenCounter::new(&params.tokenizer_name);
+                if let Err(e) = token_step {
+                    panic!("{}", e);
+                }
+                Box::new(token_step.unwrap())
             }
         };
         steps.push(step);
