@@ -21,12 +21,13 @@ tokio = { version = "1.44.2", features = ["full"] }
 serde_json = "1.0.140"
 clap = { version = "4.5.37", features = ["derive"] }
 lapin = { version = "2.5.3", features = ["native-tls"] }
-indicatif = "0.17"
+indicatif = { version = "0.17", features = ["tokio"] }
 axum = "0.7"
 prometheus = { version = "0.13", features = ["process"] }
 lazy_static = "1.4" # Or use once_cell which is already present
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-appender = "0.2"
 rand = "0.8" # Added rand dependency
 # {{ Add dependencies needed for producer/worker (some might be added later) }}
 # redis = { version = "0.25", features = ["tokio-comp"] } # Example: Redis client
