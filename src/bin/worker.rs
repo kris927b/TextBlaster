@@ -2,8 +2,8 @@
 
 use clap::Parser;
 use futures::StreamExt; // For processing the consumer stream
-use indicatif::{ProgressBar, ProgressStyle}; // Added for progress bar
-use std::time::{Duration, Instant}; // Added for progress bar speed calculation
+use indicatif::{ProgressBar, ProgressStyle};
+use std::time::{Duration, Instant}; // Added for progress bar // Added for progress bar speed calculation
                                     // {{ Use the new load_pipeline_config function }}
 use TextBlaster::config::{load_pipeline_config, PipelineConfig, StepConfig}; // Added config imports and load_pipeline_config
 use TextBlaster::data_model::{ProcessingOutcome, TextDocument}; // Updated import
@@ -38,8 +38,8 @@ use std::path::PathBuf;
 use std::sync::Arc; // To share the executor across potential concurrent tasks
                     // {{ Add serde_json for result serialization }}
 use tracing::{debug, error, info, info_span, instrument, warn}; // Added tracing
-use tracing_subscriber::{fmt, EnvFilter, layer::SubscriberExt, util::SubscriberInitExt}; // Added tracing_subscriber
-use tracing_appender; // Added for file logging
+use tracing_appender;
+use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer}; // Added tracing_subscriber // Added for file logging
 
 // Define command-line arguments
 #[derive(Parser, Debug)]
@@ -372,28 +372,14 @@ async fn main() -> Result<()> {
     let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")); // Default to info if RUST_LOG is not set
 
     // Setup file logging
-    let file_appender = match tracing_appender::rolling::daily(".", "worker.log") {
-        Ok(appender) => appender,
-        Err(e) => {
-            eprintln!("Failed to create file appender for worker.log: {}", e);
-            // Fallback or exit if necessary, here we'll just proceed without file logging
-            // Or, to be more robust, you might want to handle this more gracefully
-            // For now, let's print an error and continue without file logging.
-            // In a production scenario, you might want to panic or use a different fallback.
-            return Err(PipelineError::ConfigurationError(format!(
-                "Failed to initialize file logger: {}",
-                e
-            )));
-        }
-    };
+    let file_appender = tracing_appender::rolling::daily("./log", "worker.log");
 
     let (non_blocking_file_writer, _guard) = tracing_appender::non_blocking(file_appender);
 
     // Configure the console layer
     let console_layer = fmt::layer()
         .with_writer(std::io::stdout) // Write to stdout
-        .with_filter(EnvFilter::new("info")); // Only info and above for console
-
+        .with_filter(EnvFilter::new("warn")); // Only info and above for console
 
     // Configure the file logging layer
     let file_layer = fmt::layer()
@@ -406,8 +392,9 @@ async fn main() -> Result<()> {
         .with(console_layer)
         .with(file_layer)
         .try_init()
-        .map_err(|e| PipelineError::ConfigurationError(format!("Failed to initialize tracing subscriber: {}", e)))?;
-
+        .map_err(|e| {
+            PipelineError::ConfigError(format!("Failed to initialize tracing subscriber: {}", e))
+        })?;
 
     // Setup Prometheus Metrics Endpoint
     if let Err(e) = setup_prometheus_metrics(args.metrics_port).await {
@@ -421,7 +408,7 @@ async fn main() -> Result<()> {
         ProgressStyle::default_spinner()
             .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ ")
             .template("{spinner:.green} {msg}")
-            .expect("Failed to create progress style")
+            .expect("Failed to create progress style"),
     );
     pb.enable_steady_tick(Duration::from_millis(100));
     pb.set_message("Initializing...");
@@ -437,7 +424,8 @@ async fn main() -> Result<()> {
                 let current_processed_total = TASKS_PROCESSED_TOTAL.get();
                 let current_filtered_total = TASKS_FILTERED_TOTAL.get();
                 // Sum of pipeline errors and deserialization errors for a total error count
-                let current_errored_total = TASKS_FAILED_TOTAL.get() + TASK_DESERIALIZATION_ERRORS_TOTAL.get();
+                let current_errored_total =
+                    TASKS_FAILED_TOTAL.get() + TASK_DESERIALIZATION_ERRORS_TOTAL.get();
 
                 let now = Instant::now();
                 let duration_since_last_update = (now - last_update_time).as_secs_f64();
@@ -451,10 +439,7 @@ async fn main() -> Result<()> {
 
                 pb_clone.set_message(format!(
                     "Processed: {}, Filtered: {}, Errored: {} | Speed: {:.2} docs/sec",
-                    current_processed_total,
-                    current_filtered_total,
-                    current_errored_total,
-                    speed
+                    current_processed_total, current_filtered_total, current_errored_total, speed
                 ));
 
                 last_processed_count = current_processed_total;
