@@ -1,6 +1,4 @@
 pipeline:
   - type: LanguageDetectionFilter
-    params:
-      min_confidence: 0.90
-      allowed_languages:
-        - en
+    min_confidence: 0.65
+    allowed_languages: [ "eng" ]

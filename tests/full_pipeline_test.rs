@@ -5,9 +5,12 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use rand::Rng;
-use serde_json::json;
-use tempfile::{tempdir, TempDir};
-use testcontainers::{core::WaitFor, runners::AsyncRunner, GenericImage, ImageExt}; // Added AsyncRunner
+use tempfile::tempdir;
+use testcontainers::{
+    core::{IntoContainerPort, WaitFor},
+    runners::AsyncRunner,
+    ContainerAsync, GenericImage,
+}; // Added AsyncRunner
 
 use TextBlaster::config::ParquetInputConfig;
 use TextBlaster::data_model::TextDocument;
@@ -30,7 +33,11 @@ fn create_doc(id: &str, content: &str, source: &str, lang: Option<&str>) -> Text
 }
 
 // Helper function to create a test input Parquet file
-fn create_test_input_parquet_file(docs: &[TextDocument], dir: &Path, filename: &str) -> Result<PathBuf> {
+fn create_test_input_parquet_file(
+    docs: &[TextDocument],
+    dir: &Path,
+    filename: &str,
+) -> Result<PathBuf> {
     let file_path = dir.join(filename);
     let mut writer = ParquetWriter::new(file_path.to_str().expect("Path should be valid UTF-8"))?;
     writer.write_batch(docs)?;
@@ -39,21 +46,27 @@ fn create_test_input_parquet_file(docs: &[TextDocument], dir: &Path, filename: &
 }
 
 // Helper function to start a RabbitMQ container
-async fn start_rabbitmq_container() -> (testcontainers::Container<'static, GenericImage>, String) {
+async fn start_rabbitmq_container() -> (ContainerAsync<GenericImage>, String) {
     let image = GenericImage::new("rabbitmq", "3.13-management")
-        .with_wait_for(WaitFor::All(vec![
-            WaitFor::StdOutMessage {
-                message: "Server startup complete".to_string(),
-            },
-            WaitFor::Healthcheck,
-        ]))
-        .with_exposed_port(5672); // Default AMQP port
+        .with_wait_for(WaitFor::message_on_stdout(
+            "Server startup complete".to_string(),
+        ))
+        .with_exposed_port(5672.tcp()); // Default AMQP port
 
     // Use AsyncRunner for async test environments
-    let container = image.start().await.expect("Failed to start RabbitMQ container");
+    let container = image
+        .start()
+        .await
+        .expect("Failed to start RabbitMQ container");
 
-    let host_ip = container.get_host().await.expect("Failed to get container host IP");
-    let host_port = container.get_host_port_ipv4(5672).await.expect("Failed to get mapped port");
+    let host_ip = container
+        .get_host()
+        .await
+        .expect("Failed to get container host IP");
+    let host_port = container
+        .get_host_port_ipv4(5672)
+        .await
+        .expect("Failed to get mapped port");
 
     let amqp_addr = format!("amqp://guest:guest@{}:{}/%2f", host_ip, host_port);
 
@@ -86,14 +99,17 @@ async fn test_full_pipeline_e2e() -> Result<()> {
     // 4. Define unique task and result queue names
     let task_queue_name = format!("task_queue_{}", test_id);
     let results_queue_name = format!("results_queue_{}", test_id);
-    println!("Task Queue: {}, Results Queue: {}", task_queue_name, results_queue_name);
+    println!(
+        "Task Queue: {}, Results Queue: {}",
+        task_queue_name, results_queue_name
+    );
 
     // 5. Create a sample input TextDocument list
     let doc1_pass = create_doc(
         "doc1_en",
-        "This is a valid English document.",
+        "Sometimes, all you need to start the day right is a good coffee and someone greeting you smiling.",
         "test_source",
-        Some("en"), // Will be kept by LanguageDetectionFilter
+        Some("eng"), // Will be kept by LanguageDetectionFilter
     );
     let doc2_filter = create_doc(
         "doc2_fr",
@@ -108,7 +124,11 @@ async fn test_full_pipeline_e2e() -> Result<()> {
         None, // Language detection should still pick it up as 'en'
     );
 
-    let input_docs = vec![doc1_pass.clone(), doc2_filter.clone(), doc3_pass_no_lang_hint.clone()];
+    let input_docs = vec![
+        doc1_pass.clone(),
+        doc2_filter.clone(),
+        doc3_pass_no_lang_hint.clone(),
+    ];
 
     // 6. Create the input Parquet file
     let input_parquet_file = create_test_input_parquet_file(
@@ -128,7 +148,9 @@ async fn test_full_pipeline_e2e() -> Result<()> {
 
     // Path to the compiled binaries (target/debug/producer and target/debug/worker)
     // This assumes `cargo test` is run from the project root.
-    let target_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target").join("debug");
+    let target_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("target")
+        .join("debug");
     let producer_exe = target_dir.join("producer");
     let worker_exe = target_dir.join("worker");
     let test_config_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -141,9 +163,21 @@ async fn test_full_pipeline_e2e() -> Result<()> {
     println!("Test config path: {:?}", test_config_path);
 
     // Ensure executables exist
-    assert!(producer_exe.exists(), "Producer executable not found at {:?}", producer_exe);
-    assert!(worker_exe.exists(), "Worker executable not found at {:?}", worker_exe);
-    assert!(test_config_path.exists(), "Test config file not found at {:?}", test_config_path);
+    assert!(
+        producer_exe.exists(),
+        "Producer executable not found at {:?}",
+        producer_exe
+    );
+    assert!(
+        worker_exe.exists(),
+        "Worker executable not found at {:?}",
+        worker_exe
+    );
+    assert!(
+        test_config_path.exists(),
+        "Test config file not found at {:?}",
+        test_config_path
+    );
 
     // Start Worker
     println!("Starting worker process for test ID: {}...", test_id);
@@ -172,9 +206,13 @@ async fn test_full_pipeline_e2e() -> Result<()> {
 
     // Start Producer
     println!("Starting producer process for test ID: {}...", test_id);
-    let mut producer_process = Command::new(&producer_exe)
+    let producer_process = Command::new(&producer_exe)
         .arg("--input-file")
         .arg(input_parquet_file.to_str().unwrap())
+        .arg("--text-column")
+        .arg("content")
+        .arg("--id-column") // Add this line
+        .arg("id") // Add this line
         .arg("--amqp-addr")
         .arg(&amqp_addr)
         .arg("--task-queue")
@@ -194,7 +232,10 @@ async fn test_full_pipeline_e2e() -> Result<()> {
     println!("Producer process spawned (PID: {}).", producer_process.id());
 
     // 6. Wait for Completion and Verify Results
-    println!("Waiting for producer process (PID: {}) to complete...", producer_process.id());
+    println!(
+        "Waiting for producer process (PID: {}) to complete...",
+        producer_process.id()
+    );
     let producer_output = producer_process
         .wait_with_output()
         .expect("Failed to wait for producer process");
@@ -204,7 +245,10 @@ async fn test_full_pipeline_e2e() -> Result<()> {
     println!("{}", String::from_utf8_lossy(&producer_output.stdout));
     println!("Producer stderr:");
     eprintln!("{}", String::from_utf8_lossy(&producer_output.stderr)); // Use eprintln for stderr
-    assert!(producer_output.status.success(), "Producer process exited with an error. Check stderr above.");
+    assert!(
+        producer_output.status.success(),
+        "Producer process exited with an error. Check stderr above."
+    );
 
     // Handle worker process
     // Try to wait for the worker for a bit, then kill if it hasn't exited.
@@ -213,35 +257,63 @@ async fn test_full_pipeline_e2e() -> Result<()> {
     match worker_process.try_wait() {
         Ok(Some(status)) => {
             println!("Worker process exited on its own with status: {}", status);
-            let worker_final_output = worker_process.wait_with_output().expect("Failed to get worker output after it exited");
-            println!("Worker stdout:\n{}", String::from_utf8_lossy(&worker_final_output.stdout));
-            eprintln!("Worker stderr:\n{}", String::from_utf8_lossy(&worker_final_output.stderr)); // Use eprintln for stderr
+            let worker_final_output = worker_process
+                .wait_with_output()
+                .expect("Failed to get worker output after it exited");
+            println!(
+                "Worker stdout:\n{}",
+                String::from_utf8_lossy(&worker_final_output.stdout)
+            );
+            eprintln!(
+                "Worker stderr:\n{}",
+                String::from_utf8_lossy(&worker_final_output.stderr)
+            ); // Use eprintln for stderr
         }
         Ok(None) => {
             println!("Worker process still running, attempting to kill it.");
             if let Err(e) = worker_process.kill() {
-                eprintln!("Failed to kill worker process: {}. It might have already exited.", e);
+                eprintln!(
+                    "Failed to kill worker process: {}. It might have already exited.",
+                    e
+                );
             } else {
                 println!("Worker process killed.");
             }
             // Always attempt to get output after it has been killed or exited.
-            let worker_final_output = worker_process.wait_with_output().expect("Failed to get output from worker after kill/exit attempt");
-            println!("Worker stdout (after kill/exit attempt):\n{}", String::from_utf8_lossy(&worker_final_output.stdout));
-            eprintln!("Worker stderr (after kill/exit attempt):\n{}", String::from_utf8_lossy(&worker_final_output.stderr)); // Use eprintln for stderr
+            let worker_final_output = worker_process
+                .wait_with_output()
+                .expect("Failed to get output from worker after kill/exit attempt");
+            println!(
+                "Worker stdout (after kill/exit attempt):\n{}",
+                String::from_utf8_lossy(&worker_final_output.stdout)
+            );
+            eprintln!(
+                "Worker stderr (after kill/exit attempt):\n{}",
+                String::from_utf8_lossy(&worker_final_output.stderr)
+            ); // Use eprintln for stderr
         }
         Err(e) => {
             eprintln!("Error trying to wait for worker process: {}", e);
             // Attempt to get output anyway if try_wait fails, though it might also fail.
             if let Ok(worker_final_output) = worker_process.wait_with_output() {
-                 println!("Worker stdout (after try_wait error):\n{}", String::from_utf8_lossy(&worker_final_output.stdout));
-                 eprintln!("Worker stderr (after try_wait error):\n{}", String::from_utf8_lossy(&worker_final_output.stderr));
+                println!(
+                    "Worker stdout (after try_wait error):\n{}",
+                    String::from_utf8_lossy(&worker_final_output.stdout)
+                );
+                eprintln!(
+                    "Worker stderr (after try_wait error):\n{}",
+                    String::from_utf8_lossy(&worker_final_output.stderr)
+                );
             }
         }
     }
 
     // Verify the output Parquet file
     println!("Verifying output Parquet file: {:?}", output_parquet_file);
-    assert!(output_parquet_file.exists(), "Output Parquet file was not created.");
+    assert!(
+        output_parquet_file.exists(),
+        "Output Parquet file was not created."
+    );
     let output_reader_config = ParquetInputConfig {
         path: output_parquet_file.to_str().unwrap().to_string(),
         text_column: "content".to_string(),
@@ -249,11 +321,19 @@ async fn test_full_pipeline_e2e() -> Result<()> {
         batch_size: Some(10),
     };
     let output_reader = ParquetReader::new(output_reader_config);
-    let mut processed_docs: Vec<TextDocument> = output_reader.read_documents()?.collect::<Result<Vec<_>>>()?;
+    let mut processed_docs: Vec<TextDocument> = output_reader
+        .read_documents()?
+        .collect::<Result<Vec<_>>>()?;
 
     // Verify the excluded Parquet file
-    println!("Verifying excluded Parquet file: {:?}", excluded_parquet_file);
-    assert!(excluded_parquet_file.exists(), "Excluded Parquet file was not created.");
+    println!(
+        "Verifying excluded Parquet file: {:?}",
+        excluded_parquet_file
+    );
+    assert!(
+        excluded_parquet_file.exists(),
+        "Excluded Parquet file was not created."
+    );
     let excluded_reader_config = ParquetInputConfig {
         path: excluded_parquet_file.to_str().unwrap().to_string(),
         text_column: "content".to_string(),
@@ -261,32 +341,75 @@ async fn test_full_pipeline_e2e() -> Result<()> {
         batch_size: Some(10),
     };
     let excluded_reader = ParquetReader::new(excluded_reader_config);
-    let mut filtered_docs: Vec<TextDocument> = excluded_reader.read_documents()?.collect::<Result<Vec<_>>>()?;
+    let mut filtered_docs: Vec<TextDocument> = excluded_reader
+        .read_documents()?
+        .collect::<Result<Vec<_>>>()?;
 
     // Sort documents by ID for consistent comparison
     processed_docs.sort_by(|a, b| a.id.cmp(&b.id));
     filtered_docs.sort_by(|a, b| a.id.cmp(&b.id));
 
+    println!(
+        "Processed Docs IDs (debug): {:#?}",
+        processed_docs.iter().map(|d| &d.id).collect::<Vec<_>>()
+    );
+    println!(
+        "Filtered Docs IDs (debug): {:#?}",
+        filtered_docs.iter().map(|d| &d.id).collect::<Vec<_>>()
+    );
+    println!("Expected doc1_pass ID: {:?}", doc1_pass.id);
+
     // Assertions
-    assert_eq!(processed_docs.len(), 2, "Expected 2 documents in the output file.");
-    assert_eq!(filtered_docs.len(), 1, "Expected 1 document in the excluded file.");
+    assert_eq!(
+        processed_docs.len(),
+        2,
+        "Expected 2 documents in the output file."
+    );
+    assert_eq!(
+        filtered_docs.len(),
+        1,
+        "Expected 1 document in the excluded file."
+    );
 
     // Check content of processed docs
     // Note: ParquetReader sets the 'source' field to the file path. We should not compare it directly with original 'source'.
     // Metadata might also be affected by processing or Parquet read/write. Focus on ID and content.
 
     let expected_doc1_pass = processed_docs.iter().find(|d| d.id == doc1_pass.id);
-    assert!(expected_doc1_pass.is_some(), "doc1_pass (doc1_en) not found in processed docs");
-    assert_eq!(expected_doc1_pass.unwrap().content, doc1_pass.content, "Content mismatch for doc1_pass");
+    assert!(
+        expected_doc1_pass.is_some(),
+        "doc1_pass (doc1_en) not found in processed docs"
+    );
+    assert_eq!(
+        expected_doc1_pass.unwrap().content,
+        doc1_pass.content,
+        "Content mismatch for doc1_pass"
+    );
 
-    let expected_doc3_pass = processed_docs.iter().find(|d| d.id == doc3_pass_no_lang_hint.id);
-    assert!(expected_doc3_pass.is_some(), "doc3_pass_no_lang_hint (doc3_en_implicit) not found in processed docs");
-    assert_eq!(expected_doc3_pass.unwrap().content, doc3_pass_no_lang_hint.content, "Content mismatch for doc3_pass_no_lang_hint");
+    let expected_doc3_pass = processed_docs
+        .iter()
+        .find(|d| d.id == doc3_pass_no_lang_hint.id);
+    assert!(
+        expected_doc3_pass.is_some(),
+        "doc3_pass_no_lang_hint (doc3_en_implicit) not found in processed docs"
+    );
+    assert_eq!(
+        expected_doc3_pass.unwrap().content,
+        doc3_pass_no_lang_hint.content,
+        "Content mismatch for doc3_pass_no_lang_hint"
+    );
 
     // Check content of filtered docs
     let expected_doc2_filter = filtered_docs.iter().find(|d| d.id == doc2_filter.id);
-    assert!(expected_doc2_filter.is_some(), "doc2_filter (doc2_fr) not found in filtered docs");
-    assert_eq!(expected_doc2_filter.unwrap().content, doc2_filter.content, "Content mismatch for doc2_filter");
+    assert!(
+        expected_doc2_filter.is_some(),
+        "doc2_filter (doc2_fr) not found in filtered docs"
+    );
+    assert_eq!(
+        expected_doc2_filter.unwrap().content,
+        doc2_filter.content,
+        "Content mismatch for doc2_filter"
+    );
 
     // Ensure original documents are still in scope for comparison or clone them earlier.
     // The `doc1_pass.clone(), doc2_filter.clone(), doc3_pass_no_lang_hint.clone()` in setup ensures this.
