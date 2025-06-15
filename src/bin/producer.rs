@@ -1,5 +1,34 @@
 // src/bin/producer.rs
 
+//! # Producer Binary
+//!
+//! This binary is responsible for the producer side of the TextBlaster pipeline.
+//! Its main roles are:
+//!
+//! 1.  **Reading Data**: It reads text documents from a specified input Parquet file.
+//!     The input file is expected to have a column for the text data and optionally
+//!     an ID column.
+//!
+//! 2.  **Publishing Tasks**: Each text document read is serialized and published as a
+//!     task to a RabbitMQ queue. These tasks are then picked up by worker instances
+//!     for processing. The producer ensures tasks are published durably to survive
+//!     broker restarts.
+//!
+//! 3.  **Aggregating Results**: After publishing tasks, the producer listens on a
+//!     separate RabbitMQ queue for processing outcomes (results) from the workers.
+//!     These outcomes indicate whether processing was successful, if a document was
+//!     filtered, or if an error occurred.
+//!
+//! 4.  **Writing Output**: Based on the aggregated results, the producer writes the
+//!     successfully processed documents to an output Parquet file and any documents
+//!     that were filtered (e.g., due to language detection) to a separate "excluded"
+//!     Parquet file.
+//!
+//! The producer utilizes `clap` for command-line argument parsing, `lapin` for RabbitMQ
+//! interaction, `parquet` (via `TextBlaster::pipeline` modules) for reading and writing
+//! Parquet files, `indicatif` for progress bars, and `tracing` for logging.
+//! It also supports exposing Prometheus metrics for monitoring.
+
 use clap::Parser;
 use futures::StreamExt; // For consuming the results stream
 use indicatif::{HumanDuration, ProgressBar, ProgressStyle}; // Added indicatif
@@ -24,49 +53,77 @@ use TextBlaster::utils::prometheus_metrics::*; // Import shared metrics
 const PARQUET_WRITE_BATCH_SIZE: usize = 500; // Configurable batch size for writing
 
 // Define command-line arguments
+/// Defines the command-line arguments accepted by the producer binary.
+///
+/// These arguments configure the input/output sources, RabbitMQ connection,
+/// queue names, and other operational parameters.
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    /// Path to the input Parquet file
+    /// Path to the input Parquet file.
+    /// This file should contain the text documents to be processed.
     #[arg(short, long)]
     input_file: String,
 
-    /// Text column name in the Parquet file
+    /// Text column name in the input Parquet file.
+    /// Specifies the column from which to read the text content of documents.
     #[arg(long, default_value = "text")]
     text_column: String,
 
-    /// Optional ID column name in the Parquet file
+    /// Optional ID column name in the input Parquet file.
+    /// If provided, this column will be used to identify documents. Otherwise,
+    /// IDs may be generated or handled differently by the pipeline.
     #[arg(long)]
     id_column: Option<String>,
 
-    /// RabbitMQ connection string (e.g., amqp://guest:guest@localhost:5672/%2f)
+    /// RabbitMQ connection string.
+    /// Format: amqp://user:password@host:port/vhost
+    /// Example: "amqp://guest:guest@localhost:5672/%2f"
     #[arg(short, long, default_value = "amqp://guest:guest@localhost:5672/%2f")]
     amqp_addr: String,
 
-    /// Name of the queue to publish tasks to
+    /// Name of the RabbitMQ queue to publish tasks to.
+    /// Workers will consume tasks from this queue.
     #[arg(short = 'q', long, default_value = "task_queue")]
     task_queue: String,
 
-    /// Name of the queue to consume results/outcomes from
+    /// Name of the RabbitMQ queue to consume results/outcomes from.
+    /// Workers will publish processing outcomes to this queue.
     #[arg(short = 'r', long, default_value = "results_queue")]
     results_queue: String,
 
-    /// Path to the output Parquet file
+    /// Path to the output Parquet file for successfully processed documents.
     #[arg(short = 'o', long, default_value = "output_processed.parquet")]
     output_file: String,
 
-    /// Path to the excluded output Parquet file
+    /// Path to the output Parquet file for documents that were excluded or filtered
+    /// during processing (e.g., due to language detection).
     #[arg(short = 'e', long, default_value = "excluded.parquet")]
     excluded_file: String,
 
-    /// Optional: Port for the Prometheus metrics HTTP endpoint
+    /// Optional: Port for the Prometheus metrics HTTP endpoint.
+    /// If specified, an HTTP server will be started on this port to expose
+    /// Prometheus metrics.
     #[arg(long)]
     metrics_port: Option<u16>,
 }
 
 // --- Prometheus Metrics (now imported from TextBlaster::utils::prometheus_metrics) ---
 
-// Helper function for creating a styled progress bar
+/// Creates and configures a new `ProgressBar` or `ProgressBar::new_spinner()`
+/// for displaying progress during long-running operations.
+///
+/// # Arguments
+///
+/// * `total_items` - The total number of items to process. If 0, a spinner is used,
+///   suitable for when the total count is unknown.
+/// * `message` - A message to display alongside the progress bar.
+/// * `template` - A string defining the style and content of the progress bar.
+///   See the `indicatif` crate documentation for template syntax.
+///
+/// # Returns
+///
+/// A configured `ProgressBar` instance.
 fn create_progress_bar(total_items: u64, message: &str, template: &str) -> ProgressBar {
     let pb = if total_items == 0 {
         // Spinner if total is unknown (or 0)
@@ -84,7 +141,26 @@ fn create_progress_bar(total_items: u64, message: &str, template: &str) -> Progr
     pb
 }
 
-// Function to publish tasks to RabbitMQ
+/// Publishes tasks to a RabbitMQ queue.
+///
+/// This function reads documents from the input Parquet file specified in `args`,
+/// serializes each document, and publishes it as a message to the RabbitMQ task queue.
+/// It uses a progress bar to display publishing progress and handles durable queue
+/// declaration to ensure tasks are not lost if the RabbitMQ broker restarts.
+///
+/// # Arguments
+///
+/// * `args` - A reference to the parsed command-line arguments (`Args`), containing
+///   input file paths, queue names, etc.
+/// * `conn` - A reference to an active `lapin::Connection` to RabbitMQ.
+/// * `publishing_pb` - A reference to an `indicatif::ProgressBar` to report
+///   publishing progress.
+///
+/// # Returns
+///
+/// A `Result` containing the total number of tasks successfully published (`u64`),
+/// or a `PipelineError` if a fatal error occurs (e.g., failure to publish a message
+/// after retries, or a channel error).
 async fn publish_tasks(
     args: &Args,
     conn: &lapin::Connection,
@@ -191,7 +267,31 @@ async fn publish_tasks(
     Ok(published_count)
 }
 
-// Function to aggregate results from RabbitMQ
+/// Aggregates processing results/outcomes from a RabbitMQ queue.
+///
+/// This function consumes messages from the results queue, where worker instances
+/// publish the outcomes of their processing tasks. It deserializes these outcomes,
+/// categorizes them (success, filtered, error), and writes the corresponding
+/// `TextDocument` data to either the main output Parquet file or an excluded items
+/// Parquet file.
+///
+/// It continues to consume messages until the number of received outcomes matches
+/// the `published_count`. Progress is reported using the `aggregation_pb`.
+///
+/// # Arguments
+///
+/// * `args` - A reference to the parsed command-line arguments (`Args`).
+/// * `conn` - A reference to an active `lapin::Connection` to RabbitMQ.
+/// * `published_count` - The total number of tasks that were originally published.
+///   This is used to determine when all expected results have been received.
+/// * `aggregation_pb` - A reference to an `indicatif::ProgressBar` to report
+///   aggregation progress.
+///
+/// # Returns
+///
+/// A `Result` containing a tuple `(outcomes_received_count, success_count, filtered_count)`,
+/// or a `PipelineError` if a fatal error occurs (e.g., failure to initialize Parquet writers,
+/// channel errors).
 async fn aggregate_results(
     args: &Args,
     conn: &lapin::Connection,
@@ -369,6 +469,21 @@ async fn aggregate_results(
 
 // setup_prometheus_metrics and metrics_handler removed, now imported from utils
 
+/// Main entry point for the producer binary.
+///
+/// Orchestrates the entire producer workflow:
+/// 1. Parses command-line arguments.
+/// 2. Initializes logging and optionally a Prometheus metrics endpoint.
+/// 3. Connects to RabbitMQ.
+/// 4. Publishes tasks from the input Parquet file to the task queue.
+/// 5. If tasks were published, it then aggregates results from the results queue.
+/// 6. Writes processed and excluded documents to their respective output Parquet files.
+/// 7. Prints a final summary of the operations.
+///
+/// # Returns
+///
+/// `Result<()>` which is `Ok(())` on successful completion of all tasks,
+/// or a `PipelineError` if any stage of the process encounters an unrecoverable error.
 #[tokio::main]
 async fn main() -> Result<()> {
     // Parse command-line arguments

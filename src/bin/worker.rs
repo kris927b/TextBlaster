@@ -1,5 +1,32 @@
 // src/bin/worker.rs
 
+//! # Worker Binary
+//!
+//! The worker binary is a crucial component of the TextBlaster pipeline, responsible
+//! for the actual data processing. Its primary functions include:
+//!
+//! 1.  **Consuming Tasks**: It connects to a RabbitMQ instance and consumes tasks
+//!     (text documents) from a designated queue. These tasks are published by the
+//!     producer.
+//!
+//! 2.  **Processing Data**: Upon receiving a task, the worker processes the
+//!     `TextDocument` through a configurable pipeline of processing steps. This
+//!     pipeline can include various filters (e.g., quality filters, language
+//!     detection, bad words removal) and transformations (e.g., token counting).
+//!     The pipeline itself is defined in a YAML configuration file.
+//!
+//! 3.  **Publishing Results**: After processing, the worker publishes the outcome
+//!     (e.g., success with the processed document, filtered document with reason,
+//!     or an error) to a results queue in RabbitMQ. The producer consumes these
+//!     outcomes to aggregate final results.
+//!
+//! The worker uses `clap` for command-line arguments, `lapin` for RabbitMQ
+//! communication, `serde` and `serde_json` for task deserialization and result
+//! serialization, and `tracing` for structured logging. It also supports
+//! Prometheus metrics for monitoring its performance and task throughput.
+//! The processing pipeline is dynamically built based on a configuration file,
+//! allowing for flexible and customizable data processing workflows.
+
 use clap::Parser;
 use futures::StreamExt; // For processing the consumer stream
 use indicatif::{ProgressBar, ProgressStyle};
@@ -43,33 +70,45 @@ use tracing_appender;
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer}; // Added tracing_subscriber // Added for file logging
 
 // Define command-line arguments
+/// Defines the command-line arguments accepted by the worker binary.
+///
+/// These arguments configure the RabbitMQ connection, queue names, processing
+/// behavior (like prefetch count), the path to the pipeline configuration file,
+/// and an optional port for Prometheus metrics.
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    /// RabbitMQ connection string (e.g., amqp://guest:guest@localhost:5672/%2f)
+    /// RabbitMQ connection string.
+    /// Format: amqp://user:password@host:port/vhost
+    /// Example: "amqp://guest:guest@localhost:5672/%2f"
     #[arg(short, long, default_value = "amqp://guest:guest@localhost:5672/%2f")]
     amqp_addr: String,
 
-    /// Name of the queue to consume tasks from
+    /// Name of the RabbitMQ queue to consume tasks from.
+    /// The producer publishes tasks to this queue.
     #[arg(short = 'q', long, default_value = "task_queue")]
-    // Use short arg 'q' consistent with producer
     task_queue: String,
 
-    /// Name of the queue to publish results/outcomes to
+    /// Name of the RabbitMQ queue to publish processing results/outcomes to.
+    /// The producer consumes results from this queue.
     #[arg(short = 'r', long, default_value = "results_queue")]
-    // Use short arg 'r' consistent with producer
     results_queue: String,
 
-    /// Prefetch count (how many messages to buffer locally)
-    #[arg(long, default_value_t = 10)] // Adjust based on task duration/resources
+    /// Prefetch count for RabbitMQ.
+    /// This value determines how many messages the worker will buffer locally from
+    /// the task queue. A higher value can improve throughput but increases memory usage.
+    #[arg(long, default_value_t = 10)]
     prefetch_count: u16,
 
-    // {{ Add argument for pipeline configuration file }}
     /// Path to the pipeline configuration YAML file.
+    /// This file defines the sequence of processing steps (e.g., filters, tokenizers)
+    /// that will be applied to each consumed task.
     #[arg(short = 'c', long, default_value = "config/pipeline_config.yaml")]
     pipeline_config: PathBuf,
 
-    /// Optional: Port for the Prometheus metrics HTTP endpoint
+    /// Optional: Port for the Prometheus metrics HTTP endpoint.
+    /// If specified, an HTTP server will be started on this port to expose
+    /// Prometheus metrics related to worker activity.
     #[arg(long)]
     metrics_port: Option<u16>,
 }
@@ -77,8 +116,26 @@ struct Args {
 // --- Prometheus Metrics (now imported from TextBlaster::utils::prometheus_metrics) ---
 // The local static definitions and specific prometheus imports are removed.
 
-// {{ Add the new function to build pipeline from configuration }}
-/// Builds the processing pipeline based on the configuration read from YAML.
+/// Constructs a processing pipeline from a `PipelineConfig`.
+///
+/// This function iterates through the `StepConfig` entries in the provided
+/// `PipelineConfig` and instantiates the corresponding `ProcessingStep` trait objects.
+/// Each step is configured based on the parameters specified in the YAML configuration.
+///
+/// # Arguments
+///
+/// * `config` - A reference to the `PipelineConfig` loaded from the YAML file.
+///
+/// # Returns
+///
+/// A `Result` containing a `Vec` of `Box<dyn ProcessingStep>`, representing the
+/// ordered sequence of processing steps in the pipeline. Returns a `PipelineError`
+/// if any step configuration is invalid or a step fails to initialize.
+///
+/// # Panics
+///
+/// This function may panic if a `TokenCounter` step fails to initialize, for example,
+/// due to an invalid or unsupported tokenizer name.
 #[instrument(skip(config), fields(num_steps = config.pipeline.len()))]
 fn build_pipeline_from_config(config: &PipelineConfig) -> Result<Vec<Box<dyn ProcessingStep>>> {
     let mut steps: Vec<Box<dyn ProcessingStep>> = Vec::new();
@@ -177,6 +234,41 @@ fn build_pipeline_from_config(config: &PipelineConfig) -> Result<Vec<Box<dyn Pro
     Ok(steps)
 }
 
+/// Consumes tasks from RabbitMQ, processes them using the pipeline, and publishes outcomes.
+///
+/// This is the core processing loop of the worker. It performs the following actions:
+/// 1.  Establishes channels for consuming tasks and publishing results with RabbitMQ.
+/// 2.  Declares the necessary task and results queues (ensuring they are durable).
+/// 3.  Sets a prefetch count (QoS) to control how many messages are buffered locally.
+/// 4.  Starts consuming messages from the task queue.
+///
+/// For each consumed message:
+/// -   Deserializes the message data into a `TextDocument`.
+/// -   Executes the configured processing pipeline on the document using the `PipelineExecutor`.
+/// -   Based on the pipeline outcome (success, filtered, or error):
+///     -   Constructs a `ProcessingOutcome` enum.
+///     -   Serializes the outcome to JSON.
+///     -   Publishes the JSON payload to the results queue.
+/// -   Acknowledges the original task message with RabbitMQ.
+///
+/// Task processing for each message is spawned into a separate `tokio` task to allow
+/// for concurrent processing up to the limits imposed by system resources and the
+/// prefetch count.
+///
+/// # Arguments
+///
+/// * `args` - A reference to the parsed command-line arguments (`Args`), providing
+///   queue names, RabbitMQ connection details, etc.
+/// * `conn` - A reference to an active `lapin::Connection` to RabbitMQ.
+/// * `executor` - An `Arc<PipelineExecutor>` containing the configured processing pipeline.
+///   The `Arc` allows sharing the executor safely across concurrent Tokio tasks.
+///
+/// # Returns
+///
+/// A `Result<()>` which is `Ok(())` if the consumer stream ends gracefully (e.g., queue
+/// deletion or channel closure). Returns a `PipelineError` if an unrecoverable error
+/// occurs during queue declaration, channel creation, message consumption, or if the
+/// consumer stream itself encounters an error.
 async fn process_tasks(
     args: &Args,
     conn: &lapin::Connection,
@@ -373,6 +465,27 @@ async fn process_tasks(
     Ok(())
 }
 
+/// Main entry point for the worker binary.
+///
+/// Orchestrates the worker's lifecycle:
+/// 1.  Parses command-line arguments using `clap`.
+/// 2.  Initializes the `tracing` subscriber for logging (with environment-based
+///     filtering and optional file logging).
+/// 3.  Optionally sets up a Prometheus metrics endpoint if a port is specified.
+/// 4.  Sets up a progress bar to display processing speed and counts.
+/// 5.  Loads the pipeline configuration from the specified YAML file.
+/// 6.  Builds the processing pipeline (sequence of `ProcessingStep`s) based on
+///     the loaded configuration.
+/// 7.  Connects to the RabbitMQ server.
+/// 8.  Calls `process_tasks` to start consuming, processing, and publishing messages.
+/// 9.  Manages the lifecycle of the progress bar and its updater task.
+/// 10. Logs final status and errors.
+///
+/// # Returns
+///
+/// `Result<()>` which is `Ok(())` if the worker completes its operations successfully
+/// (e.g., graceful shutdown of the consumer). Returns a `PipelineError` if any critical
+/// part of the setup or the main processing loop fails.
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
