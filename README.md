@@ -215,6 +215,70 @@ pub struct TextDocument {
 
 When writing to the output Parquet file, the `metadata` field is serialized to a JSON string.
 
+## TextBlaster Development Roadmap
+
+The roadmap for TextBlaster is divided into 6 phases, with subtasks to complete. Each phase is denoted by a theme.
+
+### **Phase 1: Foundational Robustness & Developer Experience**
+**Theme:** Solidify the core application by enhancing stability, standardizing practices, and improving the development loop. This phase is about building a reliable and maintainable foundation.
+
+1.  **Comprehensive Unit & Integration Testing:** Achieve >80% test coverage by writing unit tests for all filter logic and integration tests for the full producer-worker workflow. Use `testcontainers` to spin up a live RabbitMQ instance for end-to-end verification.
+2.  **CI/CD Pipeline Enforcement:** Enhance the GitHub Actions workflow to run `cargo fmt --check` and `cargo clippy -- -D warnings` on all pull requests. Add `cargo audit` to check for security vulnerabilities and automate release drafts upon tagging.
+3.  **Standardized Logging and Tracing:** Fully integrate the `tracing` crate, replacing all `println!` calls. Structure logs as JSON and add `doc_id` to tracing spans to correlate all messages for a specific document. Allow log level configuration via CLI.
+4.  **Refined Error Handling & Messaging:** Improve the clarity of all user-facing error messages. Ensure that when a task fails in a worker, the propagated error clearly identifies the worker ID, the failing step, and the root cause.
+5.  **Comprehensive Documentation:** Create a `docs/` folder with Markdown guides on architecture, configuration, and tutorials. Add `CONTRIBUTING.md` for new developers and ensure all public functions and structs have detailed doc comments (`///`).
+6.  **Configuration Validation:** Implement a `--validate-config` flag and an automatic startup check to validate the `pipeline_config.yaml`. This check will catch syntax errors, schema violations, and logical issues (e.g., a filter running before its dependency).
+
+### **Phase 2: Core Pipeline Enhancement & Usability**
+**Theme:** Improve the user experience and expand the core capabilities of the processing pipeline, making it more flexible and powerful for common tasks.
+
+1.  **Improved CLI with Subcommands & Dry-Run Mode:** Refactor the CLI using `clap` to support subcommands (`producer run`, `worker run`, `validate-config`). Add a `--dry-run` flag to the producer to process a small sample and print results to the console without writing files.
+2.  **Introduce Transformation Steps:** Extend the `ProcessingStep` trait to allow in-place modification of document content, not just filtering. Implement a `TextNormalizationStep` (e.g., lowercase, NFC normalization, whitespace removal) as the first example.
+3.  **Abstract I/O Layer for Multiple Data Formats:** Refactor I/O logic behind `DocumentReader` and `DocumentWriter` traits. Implement support for reading and writing additional formats like JSON Lines (`.jsonl`) and CSV, selectable via CLI arguments.
+4.  **Support for Rich, Nested Metadata:** Upgrade the `TextDocument` metadata from `HashMap<String, String>` to `HashMap<String, serde_json::Value>` to allow for complex, nested metadata structures from various data sources.
+5.  **Implement Graceful Shutdown:** Ensure workers can gracefully complete in-flight tasks and acknowledge their messages before shutting down when receiving a termination signal (SIGTERM), minimizing data loss.
+6.  **Local Development Environment:** Create a `docker-compose.yml` file and a `.env` file template to simplify the setup of a complete local development environment (RabbitMQ, producer, worker) with a single command.
+
+### **Phase 3: Performance, Scalability & State Management**
+**Theme:** Identify and eliminate performance bottlenecks, optimize resource usage, and introduce stateful capabilities to prepare the tool for massive-scale datasets.
+
+1.  **Comprehensive Performance Profiling:** Use tools like `flamegraph`, `dhat`, and `tokio-console` to profile CPU and memory hotspots in both the producer and worker. Instrument each pipeline step with `tracing` spans to precisely measure its performance.
+2.  **Optimize I/O with Asynchronous Operations:** Refactor the Parquet reader and writer to use `tokio::fs` and the asynchronous capabilities of the `arrow` and `parquet` crates, eliminating blocking I/O.
+3.  **Optimize Message Payloads:** Investigate and implement strategies to reduce network overhead. Options include optional payload compression (e.g., Zstd) or a "pointer-based" mode where data is placed in shared storage and the message queue only carries a pointer.
+4.  **Implement Job Progress Tracking & Resumability:** Implement a mechanism for the producer to save its state (e.g., last processed row ID). Add a `--resume` flag to allow it to recover from a crash and continue processing without starting over.
+5.  **Introduce a Stateful Processing Step:** Integrate a key-value store like Redis or RocksDB and create a `StatefulProcessingStep` trait. This will enable stateful filters like document deduplication.
+6.  **Worker Concurrency & Throughput Tuning:** Expose configuration to tune the number of concurrent processing tasks within a single worker, in addition to the RabbitMQ `prefetch_count`, to maximize resource utilization.
+
+### **Phase 4: Advanced Processing Capabilities**
+**Theme:** Evolve TextBlaster from a generic tool to a specialized platform for NLP data preparation by adding sophisticated, high-value processing steps.
+
+1.  **Implement Stateful Document Deduplication:** Create a `DeduplicationFilter` using MinHash or SimHash algorithms. This step will leverage the stateful processing foundation to identify and filter near-duplicate documents across the entire dataset.
+2.  **Add a PII Redaction & Filtering Step:** Implement a `PiiFilter` to detect and either remove documents containing Personally Identifiable Information or redact it (e.g., replacing emails with `[REDACTED]`).
+3.  **Implement Advanced NLP-Based Filters:** Add a suite of more intelligent filters, potentially using `ort` for ONNX model inference. Examples include a `PerplexityFilter` for non-sensical text, a `ToxicityFilter`, and a `QualityScoreFilter`.
+4.  **Support for Conditional Pipeline Execution:** Enhance the pipeline executor to support conditional logic in the configuration file, allowing a step to run only if a specific metadata condition is met (e.g., `if: metadata.language == "en"`).
+5.  **Implement Data Sampling and Splitting:** Add a `SamplingStep` for random or stratified sampling. Enhance the producer/writer to split output into multiple files (e.g., train/val/test) based on flags added during processing.
+6.  **Dead Letter Queue (DLQ) Management:** Configure RabbitMQ to route messages that repeatedly fail to a Dead Letter Queue. Provide a utility command to inspect, re-queue, or discard messages from the DLQ.
+
+### **Phase 5: Ecosystem Integration & Orchestration**
+**Theme:** Position TextBlaster within the broader MLOps and data engineering ecosystem, enabling deployment in modern, cloud-native environments.
+
+1.  **Enable Cloud Storage Integration (S3, GCS, etc.):** Use a library like `object_store` to enable the producer and writer to read from and write to cloud storage buckets (e.g., `s3://my-bucket/data.parquet`) natively.
+2.  **Containerize the Application:** Create official `Dockerfile`s for the `producer`, `worker`, and other binaries. Publish the images to a public container registry like GitHub Container Registry or Docker Hub.
+3.  **Develop Kubernetes Deployment Configurations:** Create a Helm chart or Kustomize configuration to simplify the deployment, scaling, and management of a TextBlaster cluster on Kubernetes.
+4.  **Abstract the Message Broker for Alternative Queues:** Refactor the RabbitMQ logic behind a `MessageBroker` trait and add a new implementation for another system like Apache Kafka or Redis Streams, making the queuing system configurable.
+5.  **Decouple Result Aggregation:** Create a new `aggregator` binary responsible for consuming processed results and writing the final output files. This decouples the producer from the writing bottleneck, improving overall system throughput.
+6.  **Develop a Python Client Library:** Create a thin Python wrapper that allows users to configure, launch, and monitor TextBlaster jobs from Python scripts or Jupyter notebooks, significantly lowering the barrier to entry for data scientists.
+
+### **Phase 6: User-Facing Polish & Advanced Operations**
+**Theme:** Finalize the user experience with advanced monitoring, reporting, and ease-of-use features that make the tool a pleasure to operate at scale.
+
+1.  **Create a Web UI for Monitoring:** Develop a simple, optional web dashboard (e.g., using Axum) that consumes the Prometheus metrics endpoint to visualize key metrics like processing rates, queue depths, error rates, and worker status in real-time.
+2.  **Enhance Operational Feedback & Reporting:** Improve the CLI progress bars (`indicatif`) to show live counts of succeeded, filtered, and errored tasks. At the end of a run, generate a `run_summary.json` file with final metrics and per-step filter counts.
+3.  **Create a 'Cookbook' of Pipeline Recipes:** Add a `recipes/` directory to the repository with documented, ready-to-use `pipeline_config.yaml` files for common use cases (e.g., "FineWeb-style cleaning," "PII Redaction," "Deduplication").
+4.  **Explore Dynamic Plugin Loading:** Investigate a plugin system (e.g., loading from `.so`/`.dll` files) that would allow users to compile and use their own custom Rust-based filters without needing to recompile the main TextBlaster binaries.
+5.  **Implement Document-Level Aggregations:** Design a new "aggregator" mode or binary that can perform a second pass over the processed data to compute global statistics like TF-IDF scores or a complete dataset vocabulary.
+6.  **Launch a Project Website:** Create a polished GitHub Pages or standalone website with comprehensive tutorials, the cookbook, benchmark results, and full API documentation to serve as the central hub for the user community.
+
 ## Contributing
 
 Contributions are welcome! Please feel free to submit pull requests or open issues for bugs, feature requests, or improvements.
