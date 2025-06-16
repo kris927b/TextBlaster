@@ -32,8 +32,8 @@ use TextBlaster::pipeline::filters::{
     LanguageDetectionFilter,
 };
 use TextBlaster::pipeline::token::TokenCounter;
+use TextBlaster::utils::common::connect_rabbitmq; // Updated for shared functions
 use TextBlaster::utils::prometheus_metrics::*;
-use TextBlaster::utils::utils::{connect_rabbitmq, setup_prometheus_metrics}; // Using shared setup_prometheus_metrics // Import shared metrics
 
 use std::path::PathBuf;
 use std::sync::Arc; // To share the executor across potential concurrent tasks
@@ -286,7 +286,7 @@ async fn process_tasks(
                                                 info!(filtered_doc_id = %document.id, %step_name, %reason, "Document was filtered");
                                                 TASKS_FILTERED_TOTAL.inc(); // Increment filtered counter
                                                 Some(ProcessingOutcome::Filtered {
-                                                    document,
+                                                    document: *document,
                                                     reason,
                                                 })
                                             }

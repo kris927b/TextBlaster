@@ -110,9 +110,10 @@ pub fn split_into_words(text: &str) -> Vec<&str> {
 
     // segment_str() returns an iterator over break points (usize byte offsets).
     // A segment is the text between two consecutive break points.
-    let mut breaks_iter = segmenter.segment_str(text).peekable();
+    let breaks_iter = segmenter.segment_str(text).peekable();
 
-    while let Some(current_break) = breaks_iter.next() {
+    for current_break in breaks_iter {
+        // while let Some(current_break) = breaks_iter.next() {
         if current_break > prev_break {
             let segment_candidate = &text[prev_break..current_break];
 

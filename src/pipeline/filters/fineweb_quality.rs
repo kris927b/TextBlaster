@@ -79,7 +79,7 @@ impl ProcessingStep for FineWebQualityFilter {
 
         if lines.is_empty() {
             return Err(PipelineError::DocumentFiltered {
-                document,
+                document: Box::new(document),
                 reason: "empty".to_string(),
             });
         }
@@ -102,7 +102,7 @@ impl ProcessingStep for FineWebQualityFilter {
             && !(line_punct_actual_ratio == 0.0 && self.line_punct_exclude_zero)
         {
             return Err(PipelineError::DocumentFiltered {
-                document,
+                document: Box::new(document),
                 reason: format!(
                     "line_punct_ratio: {:.4} < threshold {:.4} (exclude_zero: {})",
                     line_punct_actual_ratio, self.line_punct_thr, self.line_punct_exclude_zero
@@ -118,7 +118,7 @@ impl ProcessingStep for FineWebQualityFilter {
         let short_line_actual_ratio = short_lines_count as f64 / lines.len() as f64;
         if short_line_actual_ratio > self.short_line_thr {
             return Err(PipelineError::DocumentFiltered {
-                document,
+                document: Box::new(document),
                 reason: format!(
                     "short_line_ratio: {:.4} > threshold {:.4}",
                     short_line_actual_ratio, self.short_line_thr
@@ -136,7 +136,7 @@ impl ProcessingStep for FineWebQualityFilter {
         };
         if char_dup_actual_ratio > self.char_duplicates_ratio {
             return Err(PipelineError::DocumentFiltered {
-                document,
+                document: Box::new(document),
                 reason: format!(
                     "char_dup_ratio: {:.4} > threshold {:.4}",
                     char_dup_actual_ratio, self.char_duplicates_ratio
@@ -151,7 +151,7 @@ impl ProcessingStep for FineWebQualityFilter {
         if words.is_empty() {
             if new_line_count > 0 {
                 return Err(PipelineError::DocumentFiltered {
-                    document,
+                    document: Box::new(document),
                     reason: "list_ratio_no_words (newlines present but no words)".to_string(),
                 });
             }
@@ -159,7 +159,7 @@ impl ProcessingStep for FineWebQualityFilter {
             let list_actual_ratio = new_line_count as f64 / words.len() as f64;
             if list_actual_ratio > self.new_line_ratio {
                 return Err(PipelineError::DocumentFiltered {
-                    document,
+                    document: Box::new(document),
                     reason: format!(
                         "list_ratio: {:.4} > threshold {:.4}",
                         list_actual_ratio, self.new_line_ratio
