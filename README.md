@@ -217,7 +217,7 @@ When writing to the output Parquet file, the `metadata` field is serialized to a
 
 ## TextBlaster Development Roadmap
 
-The roadmap for TextBlaster is divided into 6 phases, with subtasks to complete. Each phase is denoted by a theme.
+The roadmap for TextBlaster is divided into 6 phases, with subtasks to complete. Each subtask is supposed to be a self isolated PR, and once the phase is done a new major version can be released. Each phase is denoted by a theme, that explains the grouping of sub-tasks.
 
 ### **Phase 1: Foundational Robustness & Developer Experience**
 **Theme:** Solidify the core application by enhancing stability, standardizing practices, and improving the development loop. This phase is about building a reliable and maintainable foundation.
