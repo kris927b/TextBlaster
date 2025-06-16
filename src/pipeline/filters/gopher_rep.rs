@@ -1,6 +1,5 @@
 use async_trait::async_trait;
 use regex::Regex;
-use std::collections::{HashMap, HashSet};
 
 use crate::data_model::TextDocument;
 use crate::error::{PipelineError, Result}; // Use your Result type alias

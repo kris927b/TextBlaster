@@ -31,7 +31,7 @@ use TextBlaster::pipeline::filters::{
     GopherRepetitionFilter,
     LanguageDetectionFilter,
 };
-use TextBlaster::pipeline::token::{self, TokenCounter};
+use TextBlaster::pipeline::token::TokenCounter;
 use TextBlaster::utils::prometheus_metrics::*;
 use TextBlaster::utils::utils::{connect_rabbitmq, setup_prometheus_metrics}; // Using shared setup_prometheus_metrics // Import shared metrics
 

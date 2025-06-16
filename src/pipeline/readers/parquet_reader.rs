@@ -4,13 +4,14 @@ use crate::config::ParquetInputConfig;
 use crate::data_model::TextDocument;
 use crate::error::{PipelineError, Result}; // Use the crate's error types
 
-use arrow::array::{Array, StringArray};
+use arrow::array::{Array, LargeStringArray, StringArray};
 use arrow::datatypes::DataType;
 use arrow::record_batch::RecordBatchReader; // Renamed from `arrow::record_batch::RecordBatch` which is a struct
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use std::collections::HashMap;
 use std::fs::File; // Needed for metadata
-                   // use std::sync::Arc; // Use Arc for shared ownership where needed by Arrow/Parquet APIs
+use std::sync::Arc;
+use tracing::debug; // Use Arc for shared ownership where needed by Arrow/Parquet APIs
 
 /// Reads TextDocuments from a Parquet file.
 #[derive(Debug)]
@@ -110,12 +111,22 @@ impl ParquetReader {
                             .downcast_ref::<StringArray>()
                             .ok_or_else(|| PipelineError::Unexpected(format!("Column '{}' is not a valid Utf8 StringArray", text_column_name)));
 
-                        let id_array_opt_res = match id_col_idx {
-                            Some(idx) => batch.column(idx)
-                                .as_any()
-                                .downcast_ref::<StringArray>()
-                                .ok_or_else(|| PipelineError::Unexpected(format!("ID Column '{}' is not a valid Utf8 StringArray", id_column_name.as_deref().unwrap_or("N/A"))))
-                                .map(Some),
+                        let id_array_opt_res: Result<Option<Arc<StringArray>>> = match id_col_idx {
+                            Some(idx) => {
+                                let column = batch.column(idx);
+                                debug!("ParquetReader: ID column data type in batch: {:?}", column.data_type());
+                                if let Some(ids_arr) = column.as_any().downcast_ref::<StringArray>() {
+                                    debug!("ParquetReader: Successfully downcasted ID column to StringArray.");
+                                    Ok(Some(Arc::new(ids_arr.clone()))) // Clone the StringArray and wrap in Arc
+                                } else if let Some(ids_arr) = column.as_any().downcast_ref::<LargeStringArray>() {
+                                    debug!("ParquetReader: ID column is LargeUtf8. Attempting to convert to StringArray.");
+                                    let string_array: StringArray = ids_arr.iter().map(|s| s.map(|s_val| s_val.to_string())).collect();
+                                    Ok(Some(Arc::new(string_array))) // Wrap the new StringArray in Arc
+                                }
+                                else {
+                                    Err(PipelineError::Unexpected(format!("ID Column '{}' is not a valid Utf8 or LargeUtf8 StringArray, found {:?}", id_column_name.as_deref().unwrap_or("N/A"), column.data_type())))
+                                }
+                            },
                             None => Ok(None),
                         };
 
@@ -130,7 +141,7 @@ impl ParquetReader {
                         };
 
                         match (text_array_res, id_array_opt_res, metadata_array_opt_res) {
-                             (Ok(texts), Ok(ids_opt), Ok(metadata_opt)) => {
+                             (Ok(texts), Ok(ids_opt_arc), Ok(metadata_opt)) => {
                                 let num_rows = batch.num_rows();
                                 let source_path_for_rows = config_path.clone();
 
@@ -143,9 +154,13 @@ impl ParquetReader {
                                         }
                                         let content = texts.value(i).to_string();
 
-                                        let id = match (ids_opt, id_col_idx) { // ids_opt is captured
-                                            (Some(ids_arr), Some(_)) => {
+                                        debug!("ParquetReader: ids_opt_arc before ID assignment: {:#?}", ids_opt_arc);
+
+                                        let id = match &ids_opt_arc { // ids_opt_arc is Option<Arc<StringArray>>
+                                            Some(ids_arr_arc) => { // ids_arr_arc is Arc<StringArray>
+                                                let ids_arr = ids_arr_arc.as_ref(); // Get &StringArray from Arc
                                                 if ids_arr.is_null(i) {
+                                                    debug!("ParquetReader: ID is null for row {:?}. Generating ID.", ids_arr);
                                                     format!("{}_row_{}", source_path, i)
                                                 } else {
                                                     ids_arr.value(i).to_string()
