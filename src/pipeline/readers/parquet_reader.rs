@@ -11,7 +11,7 @@ use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use std::collections::HashMap;
 use std::fs::File; // Needed for metadata
 use std::sync::Arc;
-use tracing::debug; // Use Arc for shared ownership where needed by Arrow/Parquet APIs
+use tracing::{debug, warn}; // Use Arc for shared ownership where needed by Arrow/Parquet APIs // Added warn
 
 /// Reads TextDocuments from a Parquet file.
 #[derive(Debug)]
@@ -81,7 +81,7 @@ impl ParquetReader {
                         // return Err(PipelineError::ConfigError(format!(
                         //     "Metadata column '{}' is not Utf8 or LargeUtf8.", metadata_col_name
                         // )));
-                        eprintln!("Warning: Metadata column '{}' found but is not a string type. Metadata will not be loaded.", metadata_col_name);
+                        warn!(column_name = %metadata_col_name, "Metadata column found but is not a string type. Metadata will not be loaded.");
                         None
                     }
                 }
@@ -177,7 +177,7 @@ impl ParquetReader {
                                                     HashMap::new()
                                                 } else {
                                                     serde_json::from_str(json_str).unwrap_or_else(|e| {
-                                                        eprintln!("Warning: Failed to parse metadata JSON for ID {}: '{}'. Error: {}. Using empty metadata.", id, json_str, e);
+                                                        warn!(doc_id = %id, json = %json_str, error = %e, "Failed to parse metadata JSON. Using empty metadata.");
                                                         HashMap::new()
                                                     })
                                                 }

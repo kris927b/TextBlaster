@@ -393,6 +393,7 @@ async fn main() -> Result<()> {
     // Configure the file logging layer
     let file_layer = fmt::layer()
         .with_writer(non_blocking_file_writer) // Write to the file
+        .json() // Use JSON formatting
         .with_ansi(false); // No ANSI colors in files
 
     // Combine layers and initialize the global subscriber

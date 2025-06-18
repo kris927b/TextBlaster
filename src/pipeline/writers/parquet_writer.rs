@@ -127,9 +127,9 @@ impl ParquetWriter {
 
 // --- Example Usage (Remove or place in tests/main.rs) ---
 /*
-fn main() -> Result<()> {
-    let docs = vec![
-        TextDocument {
+// fn main() -> Result<()> {
+//     let docs = vec![
+//         TextDocument {
             id: "doc1".to_string(),
             source: "sourceA".to_string(),
             content: "This is the first document.".to_string(),
@@ -168,6 +168,6 @@ fn main() -> Result<()> {
 
     println!("Successfully wrote documents to {}", output_path);
 
-    Ok(())
-}
+//     Ok(())
+// }
 */
