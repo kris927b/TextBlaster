@@ -9,8 +9,9 @@ use lapin::{
     types::FieldTable,
 };
 use std::time::Instant; // Added Instant
-use tracing::{error, info, warn}; // Added tracing
-use tracing_subscriber::{fmt, EnvFilter}; // Added tracing_subscriber
+use tracing::{error, info, info_span, warn}; // Added tracing & info_span
+use tracing_appender::{non_blocking, rolling}; // Added for file logging
+use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer}; // Added tracing_subscriber components
 use TextBlaster::config::ParquetInputConfig;
 use TextBlaster::data_model::{ProcessingOutcome, TextDocument}; // Import both TextDocument and ProcessingOutcome
 use TextBlaster::error::{PipelineError, Result}; // Use the library's Result type
@@ -125,8 +126,10 @@ async fn publish_tasks(
         publishing_pb.tick();
         match doc_result {
             Ok(doc) => {
+                let _doc_span = info_span!("publishing_doc", doc_id = %doc.id).entered();
                 match serde_json::to_vec(&doc) {
                     Ok(payload) => {
+                        info!("Serialized document for publishing.");
                         let task_publish_timer = TASK_PUBLISHING_DURATION_SECONDS.start_timer();
                         let publish_confirm = publish_channel
                             .basic_publish(
@@ -146,15 +149,12 @@ async fn publish_tasks(
                                 TASKS_PUBLISHED_TOTAL.inc();
                                 ACTIVE_TASKS_IN_FLIGHT.inc();
                                 publishing_pb.inc(1);
+                                info!("Successfully published task and received confirmation.");
                             }
                             Err(e) => {
                                 TASK_PUBLISH_ERRORS_TOTAL.inc();
-                                publishing_pb.println(format!(
-                                    "FATAL: Failed broker confirmation for task (Doc ID {}): {}. Stopping.",
-                                    doc.id, e
-                                ));
                                 error!(
-                                    doc_id = %doc.id,
+                                    // doc_id is inherited from span
                                     error = %e,
                                     "FATAL: Failed broker confirmation for task. Stopping."
                                 );
@@ -168,16 +168,14 @@ async fn publish_tasks(
                     }
                     Err(e) => {
                         TASK_PUBLISH_ERRORS_TOTAL.inc();
-                        publishing_pb.println(format!(
-                            "Failed to serialize task (Doc ID {}): {}. Skipping.",
-                            doc.id, e
-                        ));
+                        warn!(/* doc_id inherited from span */ error = %e, "Failed to serialize task. Skipping.");
                         read_errors += 1;
                     }
                 }
             }
             Err(e) => {
-                publishing_pb.println(format!("Error reading document for task: {}. Skipping.", e));
+                // doc_id is not available here as reading the document itself failed.
+                warn!(error = %e, "Error reading document for task. Skipping.");
                 read_errors += 1;
             }
         }
@@ -265,29 +263,36 @@ async fn aggregate_results(
                             ProcessingOutcome::Success(doc) => {
                                 success_count += 1;
                                 RESULTS_SUCCESS_TOTAL.inc();
+                                info!(doc_id = %doc.id, "Received successful processing outcome.");
                                 results_batch.push(doc);
                                 if results_batch.len() >= PARQUET_WRITE_BATCH_SIZE {
                                     parquet_writer_output.write_batch(&results_batch)?;
-                                    aggregation_pb.println(format!(
-                                        "Written Parquet batch ({} docs). Total: {}/{}, Success: {}, Filtered: {}",
-                                        results_batch.len(), outcomes_received_count, published_count, success_count, filtered_count
-                                    ));
+                                    info!(
+                                        batch_size = results_batch.len(),
+                                        total_received = outcomes_received_count,
+                                        total_expected = published_count,
+                                        success_count = success_count,
+                                        filtered_count = filtered_count,
+                                        "Written Parquet batch of processed documents."
+                                    );
                                     results_batch.clear();
                                 }
                             }
-                            ProcessingOutcome::Filtered {
-                                document,
-                                reason: _,
-                            } => {
+                            ProcessingOutcome::Filtered { document, reason } => {
                                 filtered_count += 1;
                                 RESULTS_FILTERED_TOTAL.inc();
+                                info!(doc_id = %document.id, %reason, "Received filtered processing outcome.");
                                 excluded_batch.push(document);
                                 if excluded_batch.len() >= PARQUET_WRITE_BATCH_SIZE {
                                     parquet_writer_excluded.write_batch(&excluded_batch)?;
-                                    aggregation_pb.println(format!(
-                                        "Written Filtered Parquet batch ({} docs). Total: {}/{}, Success: {}, Filtered: {}",
-                                        excluded_batch.len(), outcomes_received_count, published_count, success_count, filtered_count
-                                    ));
+                                    info!(
+                                        batch_size = excluded_batch.len(),
+                                        total_received = outcomes_received_count,
+                                        total_expected = published_count,
+                                        success_count = success_count,
+                                        filtered_count = filtered_count,
+                                        "Written Parquet batch of filtered documents."
+                                    );
                                     excluded_batch.clear();
                                 }
                             }
@@ -305,30 +310,28 @@ async fn aggregate_results(
                         outcome_deserialization_errors += 1;
                         RESULT_DESERIALIZATION_ERRORS_TOTAL.inc();
                         ACTIVE_TASKS_IN_FLIGHT.dec();
-                        aggregation_pb.println(format!(
-                            "Failed to deserialize outcome {}: {}. Payload: {:?}",
-                            delivery.delivery_tag,
-                            e,
-                            std::str::from_utf8(&delivery.data).unwrap_or("[invalid utf8]")
-                        ));
+                        warn!(
+                            delivery_tag = %delivery.delivery_tag,
+                            error = %e,
+                            payload = %String::from_utf8_lossy(&delivery.data),
+                            "Failed to deserialize outcome."
+                        );
                     }
                 }
                 if let Err(ack_err) = delivery.ack(BasicAckOptions::default()).await {
-                    aggregation_pb.println(format!(
-                        "Failed to ack outcome {}: {}. Might lead to duplicate counts.",
-                        delivery.delivery_tag, ack_err
-                    ));
+                    error!(
+                        delivery_tag = %delivery.delivery_tag,
+                        error = %ack_err,
+                        "Failed to ack outcome. Might lead to duplicate counts."
+                    );
                 }
             }
             Some(Err(e)) => {
-                aggregation_pb.println(format!(
-                    "Error receiving outcome: {}. Will attempt to finalize current results.",
-                    e
-                ));
+                error!(error = %e, "Error receiving outcome. Will attempt to finalize current results.");
                 break; // Exit loop on consumer error, then try to write remaining batches.
             }
             None => {
-                aggregation_pb.println("Consumer stream closed unexpectedly. Will attempt to finalize current results.");
+                warn!("Consumer stream closed unexpectedly. Will attempt to finalize current results.");
                 break; // Exit loop if stream closes, then try to write remaining batches.
             }
         }
@@ -376,8 +379,32 @@ async fn main() -> Result<()> {
     let args = Args::parse();
 
     // Initialize tracing subscriber
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")); // Default to info if RUST_LOG is not set
-    fmt::Subscriber::builder().with_env_filter(filter).init();
+    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")); // Default to info if RUST_LOG is not set
+
+    // Setup file logging
+    let file_appender = rolling::daily("./log", "producer.log");
+    let (non_blocking_file_writer, _guard) = non_blocking(file_appender);
+
+    // Configure the console layer
+    let console_layer = fmt::layer()
+        .with_writer(std::io::stdout) // Write to stdout
+        .with_filter(EnvFilter::new("warn")); // Only info and above for console
+
+    // Configure the file logging layer - JSON formatted
+    let file_layer = fmt::layer()
+        .with_writer(non_blocking_file_writer) // Write to the file
+        .json() // Use JSON formatting
+        .with_ansi(false); // No ANSI colors in files
+
+    // Combine layers and initialize the global subscriber
+    tracing_subscriber::registry()
+        .with(env_filter) // Global filter
+        .with(console_layer)
+        .with(file_layer)
+        .try_init()
+        .map_err(|e| {
+            PipelineError::ConfigError(format!("Failed to initialize tracing subscriber: {}", e))
+        })?;
 
     // Setup Prometheus Metrics Endpoint
     if let Err(e) = setup_prometheus_metrics(args.metrics_port).await {

@@ -2,6 +2,7 @@ use crate::data_model::TextDocument;
 use crate::error::{PipelineError, Result};
 use async_trait::async_trait; // Use async_trait if steps involve async operations
 use futures::stream::{FuturesUnordered, StreamExt}; // Ensure futures import is present
+use tracing::{debug, warn}; // Added tracing imports
 
 // Use async_trait for async steps
 #[async_trait] // {{Add (?Send) marker for object safety}}
@@ -20,8 +21,7 @@ pub struct PipelineExecutor {
 impl PipelineExecutor {
     pub fn new(steps: Vec<Box<dyn ProcessingStep>>) -> Self {
         if steps.is_empty() {
-            // Consider warning or error if pipeline is empty
-            println!("Warning: Pipeline created with no steps.");
+            warn!("Pipeline created with no steps.");
         }
         PipelineExecutor { steps }
     }
@@ -30,7 +30,7 @@ impl PipelineExecutor {
     pub async fn run_single_async(&self, initial_document: TextDocument) -> Result<TextDocument> {
         let mut current_doc = initial_document;
         for step in &self.steps {
-            // println!("Running async step: {}", step.name()); // Use a proper logger later
+            debug!("Running async step: {}", step.name());
 
             // Use map_err to convert the error from the step into a PipelineError::StepError
             // and then use '?' to propagate the error or get the Ok value.

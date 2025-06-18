@@ -26,7 +26,7 @@ axum = "0.7"
 prometheus = { version = "0.14", features = ["process"] }
 lazy_static = "1.4" # Or use once_cell which is already present
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 tracing-appender = "0.2"
 rand = "0.8" # Added rand dependency
 # {{ Add dependencies needed for producer/worker (some might be added later) }}
