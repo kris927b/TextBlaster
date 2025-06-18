@@ -1,3 +1,6 @@
+#![allow(non_snake_case)]
+#![allow(clippy::too_many_arguments)]
+
 // Declare the modules that form the library's public API (or internal structure)
 // Using `pub mod` makes them accessible from the binaries using `use rust_data::module_name;`
 pub mod config;

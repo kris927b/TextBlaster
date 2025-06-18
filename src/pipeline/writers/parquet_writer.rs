@@ -10,7 +10,7 @@ use std::sync::Arc; // For serializing metadata
 // Assuming your error module and Result type are defined like this
 // Adjust the import path if necessary
 use crate::data_model::TextDocument;
-use crate::error::Result;
+use crate::error::{PipelineError, Result};
 
 // Define the schema for TextDocument
 fn create_schema() -> SchemaRef {
@@ -59,7 +59,9 @@ impl ParquetWriter {
         if self.writer.is_none() {
             // Handle error: writer was already closed or failed to initialize
             // You might want a more specific error type here
-            return Err(std::io::Error::new(std::io::ErrorKind::Other, "Writer is closed").into());
+            return Err(PipelineError::Unexpected(
+                "The parquet writer was already closed".to_string(),
+            ));
         }
 
         // 1. Convert TextDocuments to Arrow Arrays

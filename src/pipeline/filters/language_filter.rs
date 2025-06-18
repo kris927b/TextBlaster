@@ -46,13 +46,19 @@ impl ProcessingStep for LanguageDetectionFilter {
                 "Document is not any of the following languages: {}",
                 self.allowed_languages.join("; ")
             );
-            Err(PipelineError::DocumentFiltered { document, reason })
+            Err(PipelineError::DocumentFiltered {
+                document: Box::new(document),
+                reason,
+            })
         } else if confidence < self.min_confidence {
             let reason = format!(
                 "Language detection confidence is not satified: {} < {}",
                 confidence, self.min_confidence
             );
-            Err(PipelineError::DocumentFiltered { document, reason })
+            Err(PipelineError::DocumentFiltered {
+                document: Box::new(document),
+                reason,
+            })
         } else {
             Ok(document)
         }

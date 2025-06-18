@@ -127,7 +127,7 @@ pub struct FineWebQualityFilterParams {
     pub short_line_length: usize, // serde will handle u64 -> usize if value fits
     pub char_duplicates_ratio: f64,
     pub new_line_ratio: f64,
-    pub language: String,
+    // pub language: String,
 }
 
 // Parameters for the TokenCounter

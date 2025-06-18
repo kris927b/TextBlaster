@@ -29,6 +29,14 @@ jobs:
       - name: Build project
         run: cargo build --verbose
 
+      # Check the formatting
+      - name: Formatting check
+        run: cargo fmt --check
+
+      # Check for code mistakes an possible improvements
+      - name: Clippy check
+        run: cargo clippy -- -D warnings
+
       # Run the tests
       # This command executes all tests in the project
       - name: Run tests

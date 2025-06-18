@@ -32,14 +32,14 @@ use TextBlaster::pipeline::filters::{
     LanguageDetectionFilter,
 };
 use TextBlaster::pipeline::token::TokenCounter;
+use TextBlaster::utils::common::connect_rabbitmq; // Updated for shared functions
 use TextBlaster::utils::prometheus_metrics::*;
-use TextBlaster::utils::utils::{connect_rabbitmq, setup_prometheus_metrics}; // Using shared setup_prometheus_metrics // Import shared metrics
 
 use std::path::PathBuf;
 use std::sync::Arc; // To share the executor across potential concurrent tasks
                     // {{ Add serde_json for result serialization }}
 use tracing::{debug, error, info, info_span, instrument, warn}; // Added tracing
-use tracing_appender;
+use tracing_appender::{non_blocking, rolling};
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer}; // Added tracing_subscriber // Added for file logging
 
 // Define command-line arguments
@@ -152,7 +152,7 @@ fn build_pipeline_from_config(config: &PipelineConfig) -> Result<Vec<Box<dyn Pro
                     params.short_line_length,
                     params.char_duplicates_ratio,
                     params.new_line_ratio,
-                    params.language.clone(),
+                    // params.language.clone(),
                     params.stop_chars.clone(),
                 ))
             }
@@ -286,7 +286,7 @@ async fn process_tasks(
                                                 info!(filtered_doc_id = %document.id, %step_name, %reason, "Document was filtered");
                                                 TASKS_FILTERED_TOTAL.inc(); // Increment filtered counter
                                                 Some(ProcessingOutcome::Filtered {
-                                                    document,
+                                                    document: *document,
                                                     reason,
                                                 })
                                             }
@@ -381,9 +381,9 @@ async fn main() -> Result<()> {
     let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")); // Default to info if RUST_LOG is not set
 
     // Setup file logging
-    let file_appender = tracing_appender::rolling::daily("./log", "worker.log");
+    let file_appender = rolling::daily("./log", "worker.log");
 
-    let (non_blocking_file_writer, _guard) = tracing_appender::non_blocking(file_appender);
+    let (non_blocking_file_writer, _guard) = non_blocking(file_appender);
 
     // Configure the console layer
     let console_layer = fmt::layer()

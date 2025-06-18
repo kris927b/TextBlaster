@@ -176,7 +176,7 @@ impl ProcessingStep for C4QualityFilter {
                 .metadata
                 .insert("c4_filter_reasons".to_string(), reasons_string.clone());
             return Err(PipelineError::DocumentFiltered {
-                document,
+                document: Box::new(document),
                 reason: reasons_string,
             });
         }
@@ -262,7 +262,7 @@ impl ProcessingStep for C4QualityFilter {
                 .metadata
                 .insert("c4_filter_reasons".to_string(), reasons_string.clone());
             Err(PipelineError::DocumentFiltered {
-                document,
+                document: Box::new(document),
                 reason: reasons_string,
             })
         } else {
@@ -469,7 +469,10 @@ impl ProcessingStep for C4BadWordsFilter {
                 document
                     .metadata
                     .insert("c4_badwords_filter_reason".to_string(), reason.clone());
-                return Err(PipelineError::DocumentFiltered { document, reason });
+                return Err(PipelineError::DocumentFiltered {
+                    document: Box::new(document),
+                    reason,
+                });
             }
         };
 
@@ -511,7 +514,10 @@ impl ProcessingStep for C4BadWordsFilter {
                 document
                     .metadata
                     .insert("c4_badwords_filter_reason".to_string(), reason.clone());
-                Err(PipelineError::DocumentFiltered { document, reason })
+                Err(PipelineError::DocumentFiltered {
+                    document: Box::new(document),
+                    reason,
+                })
             }
         } else {
             // No bad words found

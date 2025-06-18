@@ -18,8 +18,9 @@ use TextBlaster::data_model::{ProcessingOutcome, TextDocument}; // Import both T
 use TextBlaster::error::{PipelineError, Result}; // Use the library's Result type
 use TextBlaster::pipeline::readers::ParquetReader;
 use TextBlaster::pipeline::writers::parquet_writer::ParquetWriter; // For retry delay
-use TextBlaster::utils::utils::{connect_rabbitmq, setup_prometheus_metrics}; // Updated for shared functions
-                                                                             // axum and TcpListener imports removed as they are now in utils::utils
+use TextBlaster::utils::common::connect_rabbitmq; // Updated for shared functions
+use TextBlaster::utils::prometheus_metrics::setup_prometheus_metrics;
+
 use chrono::Utc; // For consumer tag in aggregate_results
 use TextBlaster::utils::prometheus_metrics::*; // Import shared metrics
 

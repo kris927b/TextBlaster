@@ -238,7 +238,7 @@ impl ProcessingStep for GopherRepetitionFilter {
             );
 
             return Err(PipelineError::DocumentFiltered {
-                document,
+                document: Box::new(document),
                 reason: reasons_string,
             });
         }
