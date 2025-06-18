@@ -306,7 +306,7 @@ impl ProcessingStep for GopherQualityFilter {
                 reasons_string.clone(),
             );
             Err(PipelineError::DocumentFiltered {
-                document,
+                document: Box::new(document),
                 reason: reasons_string,
             })
         } else {

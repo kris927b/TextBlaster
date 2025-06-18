@@ -32,7 +32,7 @@ pub enum PipelineError {
     // {{MODIFIED: Changed 'doc_id: String' to 'document: TextDocument' and updated message}}
     #[error("Document '{document_id}' filtered out: {reason}", document_id = document.id)]
     DocumentFiltered {
-        document: TextDocument,
+        document: Box<TextDocument>,
         reason: String,
     },
 
