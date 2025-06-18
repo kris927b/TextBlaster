@@ -214,21 +214,18 @@ impl GopherQualityParams {
         if let Some(min_avg_word_length) = self.min_avg_word_length {
             if min_avg_word_length <= 0.0 {
                 return Err(PipelineError::ConfigValidationError(
-                    "GopherQualityParams: min_avg_word_length must be greater than 0.0"
-                        .to_string(),
+                    "GopherQualityParams: min_avg_word_length must be greater than 0.0".to_string(),
                 ));
             }
         }
         if let Some(max_avg_word_length) = self.max_avg_word_length {
             if max_avg_word_length <= 0.0 {
                 return Err(PipelineError::ConfigValidationError(
-                    "GopherQualityParams: max_avg_word_length must be greater than 0.0"
-                        .to_string(),
+                    "GopherQualityParams: max_avg_word_length must be greater than 0.0".to_string(),
                 ));
             }
         }
-        if let (Some(min_val), Some(max_val)) =
-            (self.min_avg_word_length, self.max_avg_word_length)
+        if let (Some(min_val), Some(max_val)) = (self.min_avg_word_length, self.max_avg_word_length)
         {
             if min_val > max_val {
                 return Err(PipelineError::ConfigValidationError(format!(
@@ -242,10 +239,7 @@ impl GopherQualityParams {
             ("max_symbol_word_ratio", self.max_symbol_word_ratio),
             ("max_bullet_lines_ratio", self.max_bullet_lines_ratio),
             ("max_ellipsis_lines_ratio", self.max_ellipsis_lines_ratio),
-            (
-                "max_non_alpha_words_ratio",
-                self.max_non_alpha_words_ratio,
-            ),
+            ("max_non_alpha_words_ratio", self.max_non_alpha_words_ratio),
         ];
         for (name, val) in ratio_params.iter() {
             if let Some(v) = val {
@@ -258,10 +252,17 @@ impl GopherQualityParams {
             }
         }
 
-        if let Some(min_stop_words) = self.min_stop_words {
-            // min_stop_words can be 0, so no check for > 0 needed here.
-            // This is valid as per the original description "greater than or equal to 0".
-        }
+        // This test is pointless...
+        // if let Some(min_stop_words) = self.min_stop_words {
+        //     // min_stop_words can be 0, so no check for > 0 needed here.
+        //     // This is valid as per the original description "greater than or equal to 0".
+        //     if min_stop_words < 0 {
+        //         return Err(PipelineError::ConfigValidationError(format!(
+        //             "GopherQualityParams: min_stop_words must be non-negative, got {}",
+        //             min_stop_words
+        //         )));
+        //     }
+        // }
 
         Ok(())
     }
@@ -351,8 +352,7 @@ impl FineWebQualityFilterParams {
 
         if self.short_line_length == 0 {
             return Err(PipelineError::ConfigValidationError(
-                "FineWebQualityFilterParams: short_line_length must be greater than 0"
-                    .to_string(),
+                "FineWebQualityFilterParams: short_line_length must be greater than 0".to_string(),
             ));
         }
         Ok(())
@@ -736,7 +736,10 @@ pipeline: []
             max_doc_words: Some(10),
             ..default_gopher_quality_params()
         };
-        assert_config_validation_error!(params.validate(), "min_doc_words cannot be greater than max_doc_words");
+        assert_config_validation_error!(
+            params.validate(),
+            "min_doc_words (100) cannot be greater than max_doc_words (10)"
+        );
     }
 
     #[test]
@@ -764,7 +767,10 @@ pipeline: []
             max_avg_word_length: Some(3.0),
             ..default_gopher_quality_params()
         };
-        assert_config_validation_error!(params.validate(), "min_avg_word_length cannot be greater than max_avg_word_length");
+        assert_config_validation_error!(
+            params.validate(),
+            "min_avg_word_length (10) cannot be greater than max_avg_word_length (3)"
+        );
     }
 
     #[test]
@@ -773,7 +779,10 @@ pipeline: []
             max_symbol_word_ratio: Some(-0.1),
             ..default_gopher_quality_params()
         };
-        assert_config_validation_error!(params.validate(), "max_symbol_word_ratio must be non-negative");
+        assert_config_validation_error!(
+            params.validate(),
+            "max_symbol_word_ratio must be non-negative"
+        );
     }
 
     // --- C4BadWordsParams Tests ---
@@ -810,7 +819,6 @@ pipeline: []
         };
         assert_config_validation_error!(params.validate(), "keep_fraction");
     }
-
 
     #[test]
     fn test_c4_bad_words_params_invalid_default_language_empty() {
