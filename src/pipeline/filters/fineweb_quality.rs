@@ -36,7 +36,7 @@ pub struct FineWebQualityFilter {
     short_line_length: usize,
     char_duplicates_ratio: f64,
     new_line_ratio: f64,
-    language: String, // Stored, but might not be actively used by utils::text::split_into_words
+    // language: String, // Stored, but might not be actively used by utils::text::split_into_words
 }
 
 impl FineWebQualityFilter {
@@ -47,10 +47,10 @@ impl FineWebQualityFilter {
         short_line_length: usize,
         char_duplicates_ratio: f64,
         new_line_ratio: f64,
-        language: String,
+        // language: String,
         stop_chars: Option<HashSet<char>>,
     ) -> Self {
-        let sc = stop_chars.unwrap_or_else(|| default_stop_chars().iter().map(|&s| s).collect());
+        let sc = stop_chars.unwrap_or_else(|| default_stop_chars().iter().copied().collect());
         FineWebQualityFilter {
             line_punct_thr,
             line_punct_exclude_zero,
@@ -59,7 +59,7 @@ impl FineWebQualityFilter {
             short_line_length,
             char_duplicates_ratio,
             new_line_ratio,
-            language,
+            // language,
         }
     }
 }
@@ -183,7 +183,7 @@ mod tests {
     const DEFAULT_SHORT_LINE_THR: f64 = 0.67;
     const DEFAULT_SHORT_LINE_LENGTH: usize = 30;
     const DEFAULT_NEW_LINE_RATIO: f64 = 0.3;
-    const DEFAULT_LANGUAGE: &str = "english"; // Currently not used by split_into_words if it's new_auto()
+    // const DEFAULT_LANGUAGE: &str = "english"; // Currently not used by split_into_words if it's new_auto()
 
     // Helper to create a default filter instance for tests
     fn default_filter() -> FineWebQualityFilter {
@@ -195,7 +195,7 @@ mod tests {
             short_line_length: DEFAULT_SHORT_LINE_LENGTH,
             char_duplicates_ratio: 0.95, // Temporarily very high to isolate other test failures
             new_line_ratio: DEFAULT_NEW_LINE_RATIO,
-            language: DEFAULT_LANGUAGE.to_string(),
+            // language: DEFAULT_LANGUAGE.to_string(),
         }
     }
 
