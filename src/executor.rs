@@ -15,7 +15,7 @@ pub trait ProcessingStep: Send + Sync {
 }
 
 pub struct PipelineExecutor {
-    steps: Vec<Box<dyn ProcessingStep>>, // Holds the ordered steps
+    pub steps: Vec<Box<dyn ProcessingStep>>, // Holds the ordered steps
 }
 
 impl PipelineExecutor {
