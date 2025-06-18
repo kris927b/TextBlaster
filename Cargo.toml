@@ -23,7 +23,7 @@ clap = { version = "4.5.37", features = ["derive"] }
 lapin = { version = "2.5.3", features = ["native-tls"] }
 indicatif = { version = "0.17", features = ["tokio"] }
 axum = "0.7"
-prometheus = { version = "0.13", features = ["process"] }
+prometheus = { version = "0.14", features = ["process"] }
 lazy_static = "1.4" # Or use once_cell which is already present
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
@@ -39,7 +39,7 @@ chrono = "0.4.41"
 serde_yaml = "0.9.34"
 whatlang = "0.16.4"
 anyhow = "1.0.98"
-tokenizers = { version = "0.15.2", features = ["http"] } # Specify version and add http feature
+tokenizers = { version = "0.21", features = ["http"] } # Specify version and add http feature
 
 # {{ Define the library (implicitly done by having src/lib.rs) }}
 # [lib]
