@@ -8,10 +8,9 @@ use lapin::{
     protocol::basic::AMQPProperties,
     types::FieldTable,
 };
-use std::path::PathBuf; // Added for potential future path ops, not strictly needed now
 use std::time::Instant; // Added Instant
 use tracing::{error, info, info_span, warn}; // Added tracing & info_span
-use tracing_appender; // Added for file logging
+use tracing_appender::{non_blocking, rolling}; // Added for file logging
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer}; // Added tracing_subscriber components
 use TextBlaster::config::ParquetInputConfig;
 use TextBlaster::data_model::{ProcessingOutcome, TextDocument}; // Import both TextDocument and ProcessingOutcome
@@ -279,10 +278,7 @@ async fn aggregate_results(
                                     results_batch.clear();
                                 }
                             }
-                            ProcessingOutcome::Filtered {
-                                document,
-                                reason,
-                            } => {
+                            ProcessingOutcome::Filtered { document, reason } => {
                                 filtered_count += 1;
                                 RESULTS_FILTERED_TOTAL.inc();
                                 info!(doc_id = %document.id, %reason, "Received filtered processing outcome.");
@@ -386,8 +382,8 @@ async fn main() -> Result<()> {
     let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")); // Default to info if RUST_LOG is not set
 
     // Setup file logging
-    let file_appender = tracing_appender::rolling::daily("./log", "producer.log");
-    let (non_blocking_file_writer, _guard) = tracing_appender::non_blocking(file_appender);
+    let file_appender = rolling::daily("./log", "producer.log");
+    let (non_blocking_file_writer, _guard) = non_blocking(file_appender);
 
     // Configure the console layer
     let console_layer = fmt::layer()
