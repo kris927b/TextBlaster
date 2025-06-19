@@ -52,6 +52,9 @@ pub enum PipelineError {
         source: serde_json::Error, // Specific to JSON for now, could generalize
     },
 
+    #[error("Configuration validation error: {0}")]
+    ConfigValidationError(String),
+
     #[error("Unexpected error: {0}")]
     Unexpected(String),
     // Add other specific error types as needed
