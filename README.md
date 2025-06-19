@@ -227,7 +227,7 @@ The roadmap for TextBlaster is divided into 6 phases, with subtasks to complete.
 3.  **Standardized Logging and Tracing:** Fully integrate the `tracing` crate, replacing all `println!` calls. Structure logs as JSON and add `doc_id` to tracing spans to correlate all messages for a specific document. Allow log level configuration via CLI. - *Done* 
 4.  **Refined Error Handling & Messaging:** Improve the clarity of all user-facing error messages. Ensure that when a task fails in a worker, the propagated error clearly identifies the worker ID, the failing step, and the root cause.
 5.  **Comprehensive Documentation:** Create a `docs/` folder with Markdown guides on architecture, configuration, and tutorials. Add `CONTRIBUTING.md` for new developers and ensure all public functions and structs have detailed doc comments (`///`).
-6.  **Configuration Validation:** Implement a `--validate-config` flag and an automatic startup check to validate the `pipeline_config.yaml`. This check will catch syntax errors, schema violations, and logical issues (e.g., a filter running before its dependency).
+6.  **Configuration Validation:** Implement a `--validate-config` flag and an automatic startup check to validate the `pipeline_config.yaml`. This check will catch syntax errors, schema violations, and logical issues (e.g., a filter running before its dependency). - *Done*
 
 ### **Phase 2: Core Pipeline Enhancement & Usability**
 **Theme:** Improve the user experience and expand the core capabilities of the processing pipeline, making it more flexible and powerful for common tasks.

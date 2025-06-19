@@ -72,6 +72,10 @@ struct Args {
     /// Optional: Port for the Prometheus metrics HTTP endpoint
     #[arg(long)]
     metrics_port: Option<u16>,
+
+    /// Validate the pipeline configuration and exit
+    #[arg(long)]
+    validate_config: bool,
 }
 
 // --- Prometheus Metrics (now imported from TextBlaster::utils::prometheus_metrics) ---
@@ -376,6 +380,30 @@ async fn process_tasks(
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
+
+    if args.validate_config {
+        match load_pipeline_config(&args.pipeline_config) {
+            Ok(_) => {
+                // Note: Tracing might not be initialized here.
+                // Consider simple println for this specific validation output.
+                println!(
+                    "Configuration '{}' is valid.",
+                    args.pipeline_config.display()
+                );
+                std::process::exit(0);
+            }
+            Err(e) => {
+                // Note: Tracing might not be initialized here.
+                // Consider simple eprintln for this specific validation output.
+                eprintln!(
+                    "Configuration '{}' is invalid: {}",
+                    args.pipeline_config.display(),
+                    e
+                );
+                std::process::exit(1);
+            }
+        }
+    }
 
     // Initialize tracing subscriber
     let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")); // Default to info if RUST_LOG is not set
