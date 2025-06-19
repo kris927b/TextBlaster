@@ -1,6 +1,6 @@
 // src/readers/parquet_reader.rs
 
-use crate::config::ParquetInputConfig;
+use crate::config::parquet::ParquetInputConfig;
 use crate::data_model::TextDocument;
 use crate::error::{PipelineError, Result}; // Use the crate's error types
 

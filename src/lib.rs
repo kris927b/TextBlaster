@@ -14,3 +14,9 @@ pub mod utils;
 // pub use error::{Result, PipelineError};
 // pub use data_model::TextDocument;
 // pub use executor::{PipelineExecutor, ProcessingStep};
+
+pub mod producer_logic; // Declare the new module
+
+// The AmqpConnectionManager trait and its implementation have been removed from here
+// as per the new strategy focusing on TaskPublisherChannel defined in producer_logic.rs.
+// This should resolve the persistent "expected trait, found struct lapin::Channel" error in this file.

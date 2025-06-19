@@ -5,7 +5,7 @@ use futures::StreamExt; // For processing the consumer stream
 use indicatif::{ProgressBar, ProgressStyle};
 use std::time::{Duration, Instant}; // Added for progress bar // Added for progress bar speed calculation
                                     // {{ Use the new load_pipeline_config function }}
-use TextBlaster::config::{load_pipeline_config, PipelineConfig, StepConfig}; // Added config imports and load_pipeline_config
+use TextBlaster::config::pipeline::{load_pipeline_config, PipelineConfig, StepConfig}; // Added config imports and load_pipeline_config
 use TextBlaster::data_model::{ProcessingOutcome, TextDocument}; // Updated import
 use TextBlaster::error::{PipelineError, Result}; // Use the library's Result type
 use TextBlaster::executor::{PipelineExecutor, ProcessingStep};

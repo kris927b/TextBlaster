@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use tempfile::NamedTempFile;
 
 // Import necessary items from your crate
-use TextBlaster::config::ParquetInputConfig; // Assuming this is public and in src/config.rs
+use TextBlaster::config::parquet::ParquetInputConfig; // Assuming this is public and in src/config.rs
 use TextBlaster::data_model::TextDocument;
 use TextBlaster::error::Result;
 use TextBlaster::pipeline::readers::parquet_reader::ParquetReader;
