@@ -1,4 +1,4 @@
-use crate::config::C4BadWordsParams;
+use crate::config::pipeline::C4BadWordsParams;
 use crate::data_model::TextDocument;
 use crate::error::{PipelineError, Result};
 use crate::executor::ProcessingStep;
@@ -533,7 +533,7 @@ impl ProcessingStep for C4BadWordsFilter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::C4BadWordsParams;
+    use crate::config::pipeline::C4BadWordsParams;
     use crate::data_model::TextDocument;
     use crate::error::PipelineError;
     use std::collections::HashMap;

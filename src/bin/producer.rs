@@ -1,14 +1,14 @@
 // src/bin/producer.rs
 
-use TextBlaster::config::Args;
 use clap::Parser;
-use indicatif::{ProgressBar, ProgressStyle}; // Removed HumanDuration
-// lapin::options are used by producer_logic, not directly here anymore for these specific ones
-// use lapin::{
-//     options::{BasicAckOptions, BasicConsumeOptions, QueueDeclareOptions},
-//     types::FieldTable,
-// };
-// std::time::Instant is used by producer_logic
+use indicatif::{ProgressBar, ProgressStyle};
+use TextBlaster::config::producer::Args; // Removed HumanDuration
+                                         // lapin::options are used by producer_logic, not directly here anymore for these specific ones
+                                         // use lapin::{
+                                         //     options::{BasicAckOptions, BasicConsumeOptions, QueueDeclareOptions},
+                                         //     types::FieldTable,
+                                         // };
+                                         // std::time::Instant is used by producer_logic
 use tracing::{error, info, warn};
 use tracing_appender::{non_blocking, rolling};
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
@@ -106,14 +106,19 @@ async fn main() -> Result<()> {
     // task_publish_channel.confirm_select(lapin::options::ConfirmSelectOptions::default()).await
     //    .map_err(|e| PipelineError::QueueError(format!("Failed to set task channel to confirm mode: {}", e)))?;
 
-
     // --- Progress Bars ---
     let publishing_pb_template =
         "{spinner:.green} [{elapsed_precise}] {msg} Tasks published: {pos} ({per_sec}, ETA: {eta})";
     let publishing_pb = create_progress_bar(0, "Publishing tasks", publishing_pb_template);
 
     // 2. Publish Tasks - now passing the channel directly
-    let published_count = match TextBlaster::producer_logic::publish_tasks(&args, &task_publish_channel, &publishing_pb).await {
+    let published_count = match TextBlaster::producer_logic::publish_tasks(
+        &args,
+        &task_publish_channel,
+        &publishing_pb,
+    )
+    .await
+    {
         Ok(count) => count,
         Err(e) => {
             error!("Failed during task publishing: {}", e);
@@ -140,7 +145,14 @@ async fn main() -> Result<()> {
     // 3. Aggregate Results
     // aggregate_results now takes the results_consume_channel directly
     let (outcomes_received_count, success_count, filtered_count) =
-        match TextBlaster::producer_logic::aggregate_results(&args, &results_consume_channel, published_count, &aggregation_pb).await {
+        match TextBlaster::producer_logic::aggregate_results(
+            &args,
+            &results_consume_channel,
+            published_count,
+            &aggregation_pb,
+        )
+        .await
+        {
             Ok(counts) => counts,
             Err(e) => {
                 error!("Failed during result aggregation: {}", e);

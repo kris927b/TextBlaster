@@ -12,7 +12,7 @@ use testcontainers::{
     ContainerAsync, GenericImage,
 }; // Added AsyncRunner
 
-use TextBlaster::config::ParquetInputConfig;
+use TextBlaster::config::parquet::ParquetInputConfig;
 use TextBlaster::data_model::TextDocument;
 use TextBlaster::error::Result; // Assuming this is your crate's Result type
 use TextBlaster::pipeline::readers::parquet_reader::ParquetReader;

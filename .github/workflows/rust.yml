@@ -27,7 +27,7 @@ jobs:
       # Build the Rust project
       # This command compiles the project and checks for errors
       - name: Build project
-        run: cargo build --verbose
+        run: cargo build --verbose --release
 
       # Check the formatting
       - name: Formatting check
