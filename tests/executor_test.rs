@@ -1,8 +1,8 @@
 use async_trait::async_trait;
 use std::collections::HashMap;
-use data_pipeline_executor::data_model::TextDocument;
-use data_pipeline_executor::executor::{PipelineExecutor, ProcessingStep};
-use data_pipeline_executor::error::{PipelineError, Result}; // Assuming Result is crate::error::Result
+use TextBlaster::data_model::TextDocument;
+use TextBlaster::error::{PipelineError, Result};
+use TextBlaster::executor::{PipelineExecutor, ProcessingStep}; // Assuming Result is crate::error::Result
 
 // Helper function to create a TextDocument for testing
 fn create_test_document(id: &str, content: &str) -> TextDocument {
@@ -15,19 +15,21 @@ fn create_test_document(id: &str, content: &str) -> TextDocument {
 }
 
 // Mock ProcessingStep
-#[derive(Clone)] // Added Clone
 struct MockProcessingStep {
     name: &'static str,
-    process_fn: fn(TextDocument) -> Result<TextDocument>, // Simplified for this example
+    process_fn: Box<dyn Fn(TextDocument) -> Result<TextDocument> + Send + Sync + 'static>,
     should_error: bool,
     error_message: Option<String>,
 }
 
 impl MockProcessingStep {
-    fn new(name: &'static str, process_fn: fn(TextDocument) -> Result<TextDocument>) -> Self {
+    fn new<F>(name: &'static str, process_fn: F) -> Self
+    where
+        F: Fn(TextDocument) -> Result<TextDocument> + Send + Sync + 'static,
+    {
         MockProcessingStep {
             name,
-            process_fn,
+            process_fn: Box::new(process_fn),
             should_error: false,
             error_message: None,
         }
@@ -35,14 +37,19 @@ impl MockProcessingStep {
 
     #[allow(dead_code)] // To allow should_error and error_message to be unused in some tests
     fn new_error_step(name: &'static str, error_message: &str) -> Self {
+        let error_message_owned = error_message.to_string(); // Create one owned string
         MockProcessingStep {
             name,
-            process_fn: |_doc| Err(PipelineError::StepError { // Dummy function, will be overridden by error
-                step_name: name.to_string(),
-                source: Box::new(std::io::Error::new(std::io::ErrorKind::Other, error_message)),
+            process_fn: Box::new(move |_doc| {
+                Err(PipelineError::IoError {
+                    source: std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        error_message_owned.clone(), // Clone for the closure
+                    ),
+                })
             }),
             should_error: true,
-            error_message: Some(error_message.to_string()),
+            error_message: Some(error_message.to_string()), // Use the original owned string for the field
         }
     }
 }
@@ -55,12 +62,13 @@ impl ProcessingStep for MockProcessingStep {
 
     async fn process(&self, document: TextDocument) -> Result<TextDocument> {
         if self.should_error {
-            Err(PipelineError::StepError {
-                step_name: self.name.to_string(),
-                source: Box::new(std::io::Error::new(
+            Err(PipelineError::IoError {
+                source: std::io::Error::new(
                     std::io::ErrorKind::Other,
-                    self.error_message.clone().unwrap_or_else(|| "Mock error".to_string()),
-                )),
+                    self.error_message
+                        .clone()
+                        .unwrap_or_else(|| "Mock error".to_string()),
+                ),
             })
         } else {
             (self.process_fn)(document)
@@ -88,15 +96,8 @@ mod tests {
         let steps: Vec<Box<dyn ProcessingStep>> = vec![];
         let executor = PipelineExecutor::new(steps);
         // Simply creating it without panic is a pass for this case.
-        // We can also check if the internal steps vector is empty if it were accessible,
-        // but for now, successful creation is sufficient.
-        assert_eq!(executor.steps.len(), 0); // Assuming steps field is accessible for testing or made so.
-                                            // If not, this assertion might need to be removed or changed.
-                                            // For the sake of this example, I'll assume it's accessible or we can make it so.
-                                            // If PipelineExecutor::steps is private, this test would need to be an integration-style test
-                                            // or use other public methods to infer state.
-                                            // However, for unit testing, sometimes limited visibility adjustment for tests is acceptable.
-                                            // Let's assume for now it's pub(crate) or made accessible for tests.
+        // The internal steps vector is private, so we cannot assert its length directly.
+        // Successful creation is sufficient for this test.
     }
 
     #[test]
@@ -104,8 +105,9 @@ mod tests {
         let step1 = MockProcessingStep::new("step1", mock_step_passthrough);
         let step2 = MockProcessingStep::new("step2", mock_step_modify_content);
         let steps: Vec<Box<dyn ProcessingStep>> = vec![Box::new(step1), Box::new(step2)];
-        let executor = PipelineExecutor::new(steps);
-        assert_eq!(executor.steps.len(), 2); // Same assumption as above.
+        let _executor = PipelineExecutor::new(steps);
+        // The internal steps vector is private, so we cannot assert its length directly.
+        // Successful creation is sufficient for this test.
     }
 
     #[tokio::test] // Use tokio::test for async tests
@@ -163,13 +165,21 @@ mod tests {
             Ok(doc)
         });
 
-        let steps: Vec<Box<dyn ProcessingStep>> = vec![Box::new(step1), Box::new(error_step), Box::new(step3_never_runs)];
+        let steps: Vec<Box<dyn ProcessingStep>> = vec![
+            Box::new(step1),
+            Box::new(error_step),
+            Box::new(step3_never_runs),
+        ];
         let executor = PipelineExecutor::new(steps);
         let doc = create_test_document("doc1", "initial");
 
         let result = executor.run_single_async(doc).await;
         assert!(result.is_err());
-        if let Err(PipelineError::StepError { step_name, source: _ }) = result {
+        if let Err(PipelineError::StepError {
+            step_name,
+            source: _,
+        }) = result
+        {
             assert_eq!(step_name, "error_step");
         } else {
             panic!("Expected a StepError, but got {:?}", result);
@@ -182,7 +192,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_run_batch_parallel_async_empty_documents() {
-        let steps: Vec<Box<dyn ProcessingStep>> = vec![Box::new(MockProcessingStep::new("step1", mock_step_passthrough))];
+        let steps: Vec<Box<dyn ProcessingStep>> = vec![Box::new(MockProcessingStep::new(
+            "step1",
+            mock_step_passthrough,
+        ))];
         let executor = PipelineExecutor::new(steps);
         let documents: Vec<TextDocument> = vec![];
 
@@ -214,16 +227,21 @@ mod tests {
             doc.content.push_str(" + step1");
             Ok(doc)
         });
-        // Clone step1 for use in the second position if it needs to be distinct
-        // For this simple append, sharing is fine if MockProcessingStep is Clone.
-        // If MockProcessingStep held state that changed per call, you'd need separate instances.
-        // Let's assume our MockProcessingStep is stateless or Clone-able safely.
         let step2 = MockProcessingStep::new("step2_append", |mut doc| {
             doc.content.push_str(" + step2");
             Ok(doc)
         });
 
-        let steps: Vec<Box<dyn ProcessingStep>> = vec![Box::new(step1.clone()), Box::new(step2.clone())];
+        let steps: Vec<Box<dyn ProcessingStep>> = vec![
+            Box::new(MockProcessingStep::new("step1_append", |mut doc| {
+                doc.content.push_str(" + step1");
+                Ok(doc)
+            })),
+            Box::new(MockProcessingStep::new("step2_append", |mut doc| {
+                doc.content.push_str(" + step2");
+                Ok(doc)
+            })),
+        ];
         let executor = PipelineExecutor::new(steps);
 
         let documents = vec![
@@ -243,20 +261,19 @@ mod tests {
 
     #[tokio::test]
     async fn test_run_batch_parallel_async_with_errors() {
-        let step_ok = MockProcessingStep::new("step_ok", |mut doc| {
-            doc.content.push_str(" + ok");
-            Ok(doc)
-        });
-        let step_err = MockProcessingStep::new_error_step("step_err", "Batch processing error");
-
-        // Pipeline: ok_step -> error_step -> ok_step_after_error (won't run if error_step fails)
         let steps: Vec<Box<dyn ProcessingStep>> = vec![
-            Box::new(step_ok.clone()),
-            Box::new(step_err.clone()), // This step will cause an error for any doc passing through it
-            Box::new(MockProcessingStep::new("step_ok_after_error", |mut doc| {
-                doc.content.push_str(" + after_error"); // Should not be appended if error occurs
+            Box::new(MockProcessingStep::new("step_ok", |mut doc| {
+                doc.content.push_str(" + ok");
                 Ok(doc)
-            }))
+            })),
+            Box::new(MockProcessingStep::new_error_step(
+                "step_err",
+                "Batch processing error",
+            )),
+            Box::new(MockProcessingStep::new("step_ok_after_error", |mut doc| {
+                doc.content.push_str(" + after_error");
+                Ok(doc)
+            })),
         ];
         let executor = PipelineExecutor::new(steps);
 
@@ -293,12 +310,19 @@ mod tests {
         }
         #[async_trait]
         impl ProcessingStep for SmartErrorStep {
-            fn name(&self) -> &'static str { "smart_error_step" }
+            fn name(&self) -> &'static str {
+                "smart_error_step"
+            }
             async fn process(&self, mut document: TextDocument) -> Result<TextDocument> {
                 if document.id == self.error_doc_id {
                     Err(PipelineError::StepError {
                         step_name: self.name().to_string(),
-                        source: Box::new(std::io::Error::new(std::io::ErrorKind::Other, "Error for specific doc")),
+                        source: Box::new(PipelineError::IoError {
+                            source: std::io::Error::new(
+                                std::io::ErrorKind::Other,
+                                "Error for specific doc",
+                            ),
+                        }),
                     })
                 } else {
                     document.content.push_str(" + processed_by_smart_step");
@@ -308,8 +332,13 @@ mod tests {
         }
 
         let steps: Vec<Box<dyn ProcessingStep>> = vec![
-            Box::new(MockProcessingStep::new("step1_passthrough", mock_step_passthrough)),
-            Box::new(SmartErrorStep { error_doc_id: "doc_to_fail".to_string() })
+            Box::new(MockProcessingStep::new(
+                "step1_passthrough",
+                mock_step_passthrough,
+            )),
+            Box::new(SmartErrorStep {
+                error_doc_id: "doc_to_fail".to_string(),
+            }),
         ];
         let executor = PipelineExecutor::new(steps);
 
@@ -330,7 +359,7 @@ mod tests {
 
         // Second document should fail
         assert!(results[1].is_err());
-        if let Err(PipelineError::StepError{ step_name, ..}) = &results[1] {
+        if let Err(PipelineError::StepError { step_name, .. }) = &results[1] {
             assert_eq!(*step_name, "smart_error_step");
         } else {
             panic!("Expected StepError for doc_to_fail, got {:?}", results[1]);
