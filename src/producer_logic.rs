@@ -7,21 +7,12 @@ use crate::error::{PipelineError, Result as AppResult};
 use crate::pipeline::readers::ParquetReader;
 use crate::pipeline::writers::parquet_writer::ParquetWriter;
 use crate::utils::prometheus_metrics::*;
-use async_trait::async_trait;
-use chrono::Utc;
 use futures::{pin_mut, Stream, StreamExt};
 use indicatif::ProgressBar;
 use lapin::{
-    options::{
-        BasicAckOptions, BasicConsumeOptions, BasicPublishOptions, ConfirmSelectOptions,
-        QueueDeclareOptions,
-    },
+    options::{BasicAckOptions, BasicPublishOptions},
     protocol::basic::AMQPProperties,
-    publisher_confirm::Confirmation,
-    types::FieldTable,
-    Channel as LapinChannel, // Alias lapin::Channel to avoid confusion
-    Consumer,
-    Result as LapinResult,
+    Channel, Consumer,
 };
 use serde_json;
 use std::time::Instant;
@@ -29,69 +20,11 @@ use tracing::{error, info, info_span, warn}; // For aggregate_results consumer t
 
 pub const PARQUET_WRITE_BATCH_SIZE: usize = 500;
 
-#[async_trait]
-pub trait TaskPublisherChannel: Send + Sync {
-    async fn queue_declare(
-        &self,
-        name: &str,
-        options: QueueDeclareOptions,
-        arguments: FieldTable,
-    ) -> LapinResult<()>;
-    async fn basic_publish(
-        &self,
-        exchange: &str,
-        routing_key: &str,
-        options: BasicPublishOptions,
-        payload: &[u8],
-        properties: AMQPProperties,
-    ) -> LapinResult<Confirmation>;
-    async fn confirm_select(&self, options: ConfirmSelectOptions) -> LapinResult<()>;
-}
-
-#[async_trait]
-impl TaskPublisherChannel for LapinChannel {
-    async fn queue_declare(
-        &self,
-        name: &str,
-        options: QueueDeclareOptions,
-        arguments: FieldTable,
-    ) -> LapinResult<()> {
-        LapinChannel::queue_declare(self, name, options, arguments).await?;
-        Ok(())
-    }
-    async fn basic_publish(
-        &self,
-        exchange: &str,
-        routing_key: &str,
-        options: BasicPublishOptions,
-        payload: &[u8],
-        properties: AMQPProperties,
-    ) -> LapinResult<Confirmation> {
-        let publisher_confirmation =
-            LapinChannel::basic_publish(self, exchange, routing_key, options, payload, properties)
-                .await?;
-        publisher_confirmation.await
-    }
-    async fn confirm_select(&self, options: ConfirmSelectOptions) -> LapinResult<()> {
-        LapinChannel::confirm_select(self, options).await
-    }
-}
-
-pub async fn publish_tasks<CH: TaskPublisherChannel + ?Sized>(
+pub async fn publish_tasks(
     args: &Args,
-    publish_channel: &CH,
+    publish_channel: &Channel,
     publishing_pb: &ProgressBar,
 ) -> AppResult<u64> {
-    publish_channel
-        .queue_declare(
-            &args.task_queue,
-            QueueDeclareOptions {
-                durable: true,
-                ..Default::default()
-            },
-            FieldTable::default(),
-        )
-        .await?;
     info!("Declared durable task queue '{}'", args.task_queue);
 
     let parquet_config = ParquetInputConfig {
@@ -126,27 +59,23 @@ pub async fn publish_tasks<CH: TaskPublisherChannel + ?Sized>(
                                 &payload,
                                 AMQPProperties::default().with_delivery_mode(2),
                             )
-                            .await?;
+                            .await;
                         task_publish_timer.observe_duration();
 
                         match confirmation {
-                            Confirmation::Ack(_) | Confirmation::NotRequested => {
+                            Ok(_) => {
                                 published_count += 1;
                                 TASKS_PUBLISHED_TOTAL.inc();
                                 ACTIVE_TASKS_IN_FLIGHT.inc();
                                 publishing_pb.inc(1);
-                                if matches!(confirmation, Confirmation::Ack(_)) {
-                                    info!("Successfully published task and received ACK.");
-                                } else {
-                                    info!("Successfully published task (no confirmation requested/received).");
-                                }
+                                info!("Successfully published task");
                             }
-                            Confirmation::Nack(_) => {
+                            Err(e) => {
                                 TASK_PUBLISH_ERRORS_TOTAL.inc();
                                 error!(doc_id = %doc.id, "FATAL: Broker NACKed task. Stopping.");
                                 return Err(PipelineError::QueueError(format!(
-                                    "Publish confirmation failed (NACK) for doc {}",
-                                    doc.id
+                                    "Publish confirmation failed (NACK) for doc {}. Error {:?}",
+                                    doc.id, e
                                 )));
                             }
                         }
@@ -172,45 +101,6 @@ pub async fn publish_tasks<CH: TaskPublisherChannel + ?Sized>(
         read_errors
     ));
     Ok(published_count)
-}
-
-#[async_trait]
-pub trait ResultConsumerChannel: Send + Sync {
-    async fn queue_declare(
-        &self,
-        name: &str,
-        options: QueueDeclareOptions,
-        arguments: FieldTable,
-    ) -> LapinResult<()>;
-    async fn basic_consume(
-        &self,
-        queue: &str,
-        consumer_tag: &str,
-        options: BasicConsumeOptions,
-        arguments: FieldTable,
-    ) -> LapinResult<Consumer>;
-}
-
-#[async_trait]
-impl ResultConsumerChannel for LapinChannel {
-    async fn queue_declare(
-        &self,
-        name: &str,
-        options: QueueDeclareOptions,
-        arguments: FieldTable,
-    ) -> LapinResult<()> {
-        let _ = LapinChannel::queue_declare(self, name, options, arguments).await;
-        Ok(())
-    }
-    async fn basic_consume(
-        &self,
-        queue: &str,
-        consumer_tag: &str,
-        options: BasicConsumeOptions,
-        arguments: FieldTable,
-    ) -> LapinResult<Consumer> {
-        LapinChannel::basic_consume(self, queue, consumer_tag, options, arguments).await
-    }
 }
 
 pub async fn aggregate_results_from_stream<S>(
@@ -302,53 +192,30 @@ where
     Ok((outcomes_received_count, success_count, filtered_count))
 }
 
-pub async fn aggregate_results<CH: ResultConsumerChannel + ?Sized>(
+pub async fn aggregate_results(
     args: &Args,
-    consume_channel: &CH,
+    consumer: Consumer,
     published_count: u64,
     aggregation_pb: &ProgressBar,
 ) -> AppResult<(u64, u64, u64)> {
     info!("Starting results aggregation phase...");
-
-    consume_channel
-        .queue_declare(
-            &args.results_queue,
-            QueueDeclareOptions {
-                durable: true,
-                ..Default::default()
-            },
-            FieldTable::default(),
-        )
-        .await?;
-
-    let consumer_tag = format!(
-        "producer-aggregator-{}-{}",
-        std::process::id(),
-        Utc::now().timestamp()
-    );
-
-    let consumer = consume_channel
-        .basic_consume(
-            &args.results_queue,
-            &consumer_tag,
-            BasicConsumeOptions::default(),
-            FieldTable::default(),
-        )
-        .await?;
-
     // Map deliveries into ProcessingOutcome values
     let mapped_stream = consumer.filter_map(|delivery_result| async {
         match delivery_result {
-            Ok(delivery) => match serde_json::from_slice::<ProcessingOutcome>(&delivery.data) {
-                Ok(outcome) => {
-                    let _ = delivery.ack(BasicAckOptions::default()).await;
-                    Some(outcome)
+            Ok(delivery) => {
+                let s = std::str::from_utf8(&delivery.data).unwrap();
+                warn!("{}", s);
+                match serde_json::from_slice::<ProcessingOutcome>(&delivery.data) {
+                    Ok(outcome) => {
+                        let _ = delivery.ack(BasicAckOptions::default()).await;
+                        Some(outcome)
+                    }
+                    Err(err) => {
+                        warn!(error = %err, "Failed to deserialize outcome.");
+                        None
+                    }
                 }
-                Err(err) => {
-                    warn!(error = %err, "Failed to deserialize outcome.");
-                    None
-                }
-            },
+            }
             Err(err) => {
                 error!(error = %err, "Failed to receive delivery.");
                 None

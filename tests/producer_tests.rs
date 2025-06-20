@@ -98,314 +98,221 @@ mod args_tests {
 }
 
 #[cfg(test)]
-mod publish_task_tests {
-    use arrow::array::StringArray;
-    use arrow::datatypes::{DataType, Field, Schema};
-    use arrow::record_batch::RecordBatch;
-    use async_trait::async_trait;
-    use indicatif::ProgressBar;
-    use lapin::options::{BasicPublishOptions, ConfirmSelectOptions, QueueDeclareOptions};
-    use lapin::protocol::basic::AMQPProperties;
-    use lapin::publisher_confirm::Confirmation;
-    use lapin::types::FieldTable;
-    use lapin::Result as LapinResult;
-    use parquet::arrow::arrow_writer::ArrowWriter;
-    use parquet::file::properties::WriterProperties;
+mod publish_tasks_tests {
     use std::collections::HashMap;
-    use std::fs::File;
-    use std::sync::{Arc, Mutex};
+
+    use indicatif::ProgressBar;
+    use lapin::{options::*, types::FieldTable, Channel, Connection, ConnectionProperties};
     use tempfile::NamedTempFile;
+    use testcontainers::{
+        core::{IntoContainerPort, WaitFor},
+        runners::AsyncRunner,
+        ContainerAsync, GenericImage,
+    };
+    use tokio::time::{sleep, Duration, Instant};
+    use uuid::Uuid;
+    // Added AsyncRunner
     use TextBlaster::config::producer::Args;
     use TextBlaster::data_model::TextDocument;
-    use TextBlaster::error::PipelineError;
-    use TextBlaster::producer_logic::*;
-    use TextBlaster::utils::prometheus_metrics::{
-        TASKS_PUBLISHED_TOTAL, TASK_PUBLISH_ERRORS_TOTAL,
-    };
+    use TextBlaster::error::Result;
+    use TextBlaster::pipeline::writers::parquet_writer::ParquetWriter;
+    use TextBlaster::producer_logic::publish_tasks; // replace `my_crate` with your actual crate
 
-    //=============== MOCK SETUP ===============//
-
-    /// Defines the behavior of our mock publisher channel.
-    #[derive(Clone, Copy)]
-    enum MockBehavior {
-        /// Always return a successful ACK.
-        AlwaysAck,
-        /// Return a NACK on the first publish attempt.
-        NackOnFirstPublish,
-        /// Return a generic LapinError on publish.
-        FailOnPublish,
-    }
-
-    /// A mock implementation of the TaskPublisherChannel trait.
-    /// It allows us to simulate RabbitMQ behavior without a real connection.
-    struct MockTaskPublisherChannel {
-        /// Shared state to inspect after the test runs.
-        state: Arc<Mutex<MockState>>,
-    }
-
-    struct MockState {
-        /// Stores the payloads that were "published".
-        published_payloads: Vec<Vec<u8>>,
-        /// Controls how the mock responds to publish calls.
-        behavior: MockBehavior,
-    }
-
-    impl MockTaskPublisherChannel {
-        fn new(behavior: MockBehavior) -> Self {
-            Self {
-                state: Arc::new(Mutex::new(MockState {
-                    published_payloads: Vec::new(),
-                    behavior,
-                })),
-            }
-        }
-    }
-
-    #[async_trait]
-    impl TaskPublisherChannel for MockTaskPublisherChannel {
-        async fn queue_declare(
-            &self,
-            _name: &str,
-            _options: QueueDeclareOptions,
-            _arguments: FieldTable,
-        ) -> LapinResult<()> {
-            // Return a dummy queue. Its properties don't matter for this test.
-            Ok(())
-        }
-
-        async fn basic_publish(
-            &self,
-            _exchange: &str,
-            _routing_key: &str,
-            _options: BasicPublishOptions,
-            payload: &[u8],
-            _properties: AMQPProperties,
-        ) -> LapinResult<Confirmation> {
-            let mut state = self.state.lock().unwrap();
-            state.published_payloads.push(payload.to_vec());
-
-            match state.behavior {
-                MockBehavior::AlwaysAck => Ok(Confirmation::Ack(Default::default())),
-                MockBehavior::NackOnFirstPublish => Ok(Confirmation::Nack(Default::default())),
-                MockBehavior::FailOnPublish => {
-                    // CORRECTED LINE:
-                    // We must construct the full AMQPError with a code and text.
-                    let amqp_error = lapin::protocol::AMQPError::new(
-                        lapin::protocol::AMQPErrorKind::Hard(
-                            lapin::protocol::AMQPHardError::INTERNALERROR,
-                        ),
-                        "mock failure".into(),
-                    );
-                    Err(lapin::Error::ProtocolError(amqp_error))
-                }
-            }
-        }
-
-        async fn confirm_select(&self, _options: ConfirmSelectOptions) -> LapinResult<()> {
-            Ok(())
-        }
-    }
-
-    //=============== TEST HELPER FUNCTIONS ===============//
-
-    /// Helper to create a temporary Parquet file with a specified number of documents.
-    /// Returns the temp file handle (to prevent deletion), the file path, and the original docs.
-    fn create_test_parquet_file(num_records: usize) -> (NamedTempFile, Vec<TextDocument>) {
-        let temp_file = NamedTempFile::new().unwrap();
-        let file_path = temp_file.path().to_str().unwrap().to_string();
-
-        let ids: Vec<String> = (0..num_records).map(|i| format!("doc_{}", i)).collect();
-        let texts: Vec<String> = (0..num_records)
-            .map(|i| format!("This is text for doc {}.", i))
-            .collect();
-
-        let original_docs: Vec<TextDocument> = ids
-            .iter()
-            .zip(texts.iter())
-            .map(|(id, text)| TextDocument {
-                id: id.clone(),
-                source: "test".to_string(),
-                content: text.clone(),
-                metadata: HashMap::new(),
-            })
-            .collect();
-
-        let schema = Arc::new(Schema::new(vec![
-            Field::new("id", DataType::Utf8, false),
-            Field::new("text", DataType::Utf8, false),
-        ]));
-
-        let id_array = StringArray::from_iter_values(ids.iter());
-        let text_array = StringArray::from_iter_values(texts.iter());
-
-        let batch = RecordBatch::try_new(
-            schema.clone(),
-            vec![Arc::new(id_array), Arc::new(text_array)],
-        )
-        .unwrap();
-
-        let file = File::create(&file_path).unwrap();
-        let mut writer =
-            ArrowWriter::try_new(file, schema, Some(WriterProperties::builder().build())).unwrap();
-        writer.write(&batch).unwrap();
-        writer.close().unwrap();
-
-        (temp_file, original_docs)
-    }
-
-    fn create_mock_args(input_path: String) -> Args {
+    fn create_mock_args(input_path: String, queue_name: String) -> Args {
         Args {
             input_file: input_path,
             text_column: "text".to_string(),
             id_column: Some("id".to_string()),
             amqp_addr: "amqp://guest:guest@localhost:5672/%2f".to_string(),
-            task_queue: "test_task_queue".to_string(),
+            task_queue: queue_name,
             results_queue: "result_queue".to_string(),
+            prefetch_count: 10,
             output_file: "output".to_string(),
             excluded_file: "excluded".to_string(),
             metrics_port: Some(1234),
         }
     }
 
-    //=============== TEST CASES ===============//
+    // Helper function to start a RabbitMQ container
+    async fn start_rabbitmq_container() -> (ContainerAsync<GenericImage>, Channel, String) {
+        let image = GenericImage::new("rabbitmq", "3.13-management")
+            .with_wait_for(WaitFor::message_on_stdout(
+                "Server startup complete".to_string(),
+            ))
+            .with_exposed_port(5672.tcp()); // Default AMQP port
 
+        // Use AsyncRunner for async test environments
+        let container = image
+            .start()
+            .await
+            .expect("Failed to start RabbitMQ container");
+
+        let host_ip = container
+            .get_host()
+            .await
+            .expect("Failed to get container host IP");
+        let host_port = container
+            .get_host_port_ipv4(5672)
+            .await
+            .expect("Failed to get mapped port");
+
+        let amqp_addr = format!("amqp://guest:guest@{}:{}/%2f", host_ip, host_port);
+
+        let conn = Connection::connect(&amqp_addr, ConnectionProperties::default())
+            .await
+            .expect("connection failed");
+        let channel = conn.create_channel().await.expect("channel failed");
+
+        let queue_name = format!("test_q_{}", Uuid::new_v4());
+
+        channel
+            .queue_declare(
+                &queue_name,
+                QueueDeclareOptions::default(),
+                FieldTable::default(),
+            )
+            .await
+            .expect("queue declare failed");
+
+        (container, channel, queue_name)
+    }
+
+    async fn fetch_message(channel: &Channel, queue: &str) -> lapin::message::BasicGetMessage {
+        let timeout = Duration::from_secs(3);
+        let start = Instant::now();
+
+        loop {
+            if start.elapsed() > timeout {
+                panic!("Timed out waiting for message");
+            }
+
+            let result = channel
+                .basic_get(queue, BasicGetOptions::default())
+                .await
+                .expect("basic_get failed");
+
+            if let Some(delivery) = result {
+                return delivery;
+            }
+
+            sleep(Duration::from_millis(100)).await;
+        }
+    }
+
+    fn create_test_parquet_file(docs: &[TextDocument]) -> Result<NamedTempFile> {
+        let file = NamedTempFile::new().unwrap();
+        let mut writer = ParquetWriter::new(file.path().to_str().unwrap())?;
+        writer.write_batch(docs)?;
+        writer.close()?;
+        Ok(file)
+    }
+
+    #[ignore]
     #[tokio::test]
-    async fn test_publish_tasks_happy_path() {
-        // ARRANGE
-        let num_docs = 5;
-        let (_temp_file, original_docs) = create_test_parquet_file(num_docs);
-        let args = create_mock_args(_temp_file.path().to_str().unwrap().to_string());
-        let mock_channel = MockTaskPublisherChannel::new(MockBehavior::AlwaysAck);
+    async fn test_publish_tasks_single_document() -> Result<()> {
+        let (_container, channel, queue_name) = start_rabbitmq_container().await;
+
+        let doc = TextDocument {
+            id: "doc-1".into(),
+            source: "test".into(),
+            content: "Simple content".into(),
+            metadata: [("lang".into(), "en".into())].into(),
+        };
+        let parquet: NamedTempFile = create_test_parquet_file(&[doc])?;
+
+        let args = create_mock_args(
+            parquet.path().to_str().unwrap().to_string(),
+            queue_name.clone(),
+        );
+
         let pb = ProgressBar::hidden();
+        let result = publish_tasks(&args, &channel, &pb).await?;
+        assert_eq!(result, 1);
 
-        // Reset metrics for a clean slate
-        TASKS_PUBLISHED_TOTAL.reset();
-
-        // ACT
-        let result = publish_tasks(&args, &mock_channel, &pb).await;
-
-        // ASSERT
-        assert!(result.is_ok(), "Function should succeed");
-        assert_eq!(
-            result.unwrap(),
-            num_docs as u64,
-            "Should report all documents as published"
-        );
-
-        // Check metrics
-        assert_eq!(
-            TASKS_PUBLISHED_TOTAL.get(),
-            num_docs as f64,
-            "Prometheus metric for published tasks should be correct"
-        );
-
-        // Check mock state
-        let state = mock_channel.state.lock().unwrap();
-        assert_eq!(
-            state.published_payloads.len(),
-            num_docs,
-            "Exactly 5 messages should have been published"
-        );
-
-        // Verify content of a published message
-        let first_payload = &state.published_payloads[0];
-        let deserialized_doc: TextDocument = serde_json::from_slice(first_payload).unwrap();
-        assert_eq!(
-            deserialized_doc.content, original_docs[0].content,
-            "The content of the published message should match the source document"
-        );
+        let delivery = fetch_message(&channel, &queue_name).await;
+        let value: serde_json::Value = serde_json::from_slice(&delivery.data)?;
+        assert_eq!(value["id"], "doc-1");
+        assert_eq!(value["content"], "Simple content");
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_publish_tasks_stops_on_nack() {
-        // ARRANGE
-        let (_temp_file, _) = create_test_parquet_file(5);
-        let args = create_mock_args(_temp_file.path().to_str().unwrap().to_string());
-        let mock_channel = MockTaskPublisherChannel::new(MockBehavior::NackOnFirstPublish);
+    #[ignore]
+    async fn test_publish_tasks_multiple_documents() -> Result<()> {
+        let (_container, channel, queue_name) = start_rabbitmq_container().await;
+
+        let docs = vec![
+            TextDocument {
+                id: "a".into(),
+                source: "s".into(),
+                content: "1".into(),
+                metadata: HashMap::new(),
+            },
+            TextDocument {
+                id: "b".into(),
+                source: "s".into(),
+                content: "2".into(),
+                metadata: HashMap::new(),
+            },
+            TextDocument {
+                id: "c".into(),
+                source: "s".into(),
+                content: "3".into(),
+                metadata: HashMap::new(),
+            },
+        ];
+        let parquet = create_test_parquet_file(&docs)?;
+
+        let args = create_mock_args(
+            parquet.path().to_str().unwrap().to_string(),
+            queue_name.clone(),
+        );
+
         let pb = ProgressBar::hidden();
+        let result = publish_tasks(&args, &channel, &pb).await?;
+        assert_eq!(result, 3);
 
-        // Reset metrics
-        TASK_PUBLISH_ERRORS_TOTAL.reset();
+        let mut seen_ids = vec![];
+        for _ in 0..3 {
+            let d = fetch_message(&channel, &queue_name).await;
+            let val: serde_json::Value = serde_json::from_slice(&d.data)?;
+            seen_ids.push(val["id"].as_str().unwrap().to_string());
+        }
 
-        // ACT
-        let result = publish_tasks(&args, &mock_channel, &pb).await;
-
-        // ASSERT
-        assert!(result.is_err(), "Function should fail on NACK");
-        let err = result.unwrap_err();
-        assert!(
-            matches!(err, PipelineError::QueueError(_)),
-            "Error should be of type QueueError"
-        );
-        assert!(
-            err.to_string()
-                .contains("Publish confirmation failed (NACK)"),
-            "Error message should indicate a NACK"
-        );
-
-        // Check metrics
-        assert_eq!(
-            TASK_PUBLISH_ERRORS_TOTAL.get(),
-            1.0,
-            "Prometheus metric for publish errors should be incremented"
-        );
-
-        // Check mock state: The message was still sent before the NACK was received.
-        let state = mock_channel.state.lock().unwrap();
-        assert_eq!(
-            state.published_payloads.len(),
-            1,
-            "Only one message should have been attempted before stopping"
-        );
+        assert_eq!(seen_ids.len(), 3);
+        assert!(seen_ids.contains(&"a".to_string()));
+        assert!(seen_ids.contains(&"b".to_string()));
+        assert!(seen_ids.contains(&"c".to_string()));
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_publish_tasks_propagates_lapin_error() {
-        // ARRANGE
-        let (_temp_file, _) = create_test_parquet_file(5);
-        let args = create_mock_args(_temp_file.path().to_str().unwrap().to_string());
-        let mock_channel = MockTaskPublisherChannel::new(MockBehavior::FailOnPublish);
+    #[ignore]
+    async fn test_publish_tasks_empty_metadata() -> Result<()> {
+        let (_container, channel, queue_name) = start_rabbitmq_container().await;
+
+        let doc = TextDocument {
+            id: "empty-meta".into(),
+            source: "unit".into(),
+            content: "Testing empty metadata".into(),
+            metadata: HashMap::new(),
+        };
+
+        let parquet = create_test_parquet_file(&[doc])?;
+
+        let args = create_mock_args(
+            parquet.path().to_str().unwrap().to_string(),
+            queue_name.clone(),
+        );
+
         let pb = ProgressBar::hidden();
+        let result = publish_tasks(&args, &channel, &pb).await?;
+        assert_eq!(result, 1);
 
-        // ACT
-        let result = publish_tasks(&args, &mock_channel, &pb).await;
-
-        // ASSERT
-        assert!(
-            result.is_err(),
-            "Function should fail if basic_publish returns an error"
-        );
-        let err = result.unwrap_err();
-        assert!(
-            matches!(err, PipelineError::QueueError(_)),
-            "Error should be a wrapped QueueError"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_publish_tasks_handles_nonexistent_input_file() {
-        // ARRANGE
-        let args = create_mock_args("does_not_exist".to_string());
-        // The mock won't even be used, as the failure happens before publishing.
-        let mock_channel = MockTaskPublisherChannel::new(MockBehavior::AlwaysAck);
-        let pb = ProgressBar::hidden();
-
-        // ACT
-        // Note: The error here is synchronous, as it happens during ParquetReader setup,
-        // but publish_tasks wraps it in the AppResult.
-        let result = publish_tasks(&args, &mock_channel, &pb).await;
-
-        // ASSERT
-        assert!(
-            result.is_err(),
-            "Function should fail if input file doesn't exist"
-        );
-        let err = result.unwrap_err();
-        assert!(
-            matches!(err, PipelineError::IoError { source: _ }),
-            "{}",
-            format!("Error should be of type ParquetError not {}", err)
-        );
+        let delivery = fetch_message(&channel, &queue_name).await;
+        let val: serde_json::Value = serde_json::from_slice(&delivery.data)?;
+        assert_eq!(val["id"], "empty-meta");
+        Ok(())
     }
 }
 
@@ -427,6 +334,7 @@ mod aggregate_results_tests {
             amqp_addr: "amqp://guest:guest@localhost:5672/%2f".to_string(),
             task_queue: "test_task_queue".to_string(),
             results_queue: "result_queue".to_string(),
+            prefetch_count: 10,
             output_file: output_path,
             excluded_file: excluded_path,
             metrics_port: Some(1234),

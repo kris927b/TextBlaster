@@ -16,7 +16,7 @@ use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, Env
 // TextBlaster::error::{PipelineError, Result} is used
 use TextBlaster::error::{PipelineError, Result};
 // TextBlaster::pipeline::writers::parquet_writer::ParquetWriter is used by producer_logic
-use TextBlaster::utils::common::connect_rabbitmq;
+use TextBlaster::utils::common::{connect_rabbitmq, setup_channels_and_queues};
 use TextBlaster::utils::prometheus_metrics::setup_prometheus_metrics;
 // chrono::Utc is used by producer_logic
 // TextBlaster::utils::prometheus_metrics::* is used by producer_logic
@@ -99,8 +99,15 @@ async fn main() -> Result<()> {
     let conn = connect_rabbitmq(&args.amqp_addr).await?; // This returns a lapin::Connection
 
     // Create channels for publishing and consuming results
-    let task_publish_channel = conn.create_channel().await.map_err(PipelineError::from)?;
-    let results_consume_channel = conn.create_channel().await.map_err(PipelineError::from)?;
+    let (publish_channel, consumer) = setup_channels_and_queues(
+        &conn,
+        &args.task_queue,
+        &args.results_queue,
+        args.prefetch_count,
+        "producer".to_string(),
+    )
+    .await
+    .unwrap();
 
     // Optionally, set task_publish_channel to confirm mode if desired for all publishes
     // task_publish_channel.confirm_select(lapin::options::ConfirmSelectOptions::default()).await
@@ -112,20 +119,17 @@ async fn main() -> Result<()> {
     let publishing_pb = create_progress_bar(0, "Publishing tasks", publishing_pb_template);
 
     // 2. Publish Tasks - now passing the channel directly
-    let published_count = match TextBlaster::producer_logic::publish_tasks(
-        &args,
-        &task_publish_channel,
-        &publishing_pb,
-    )
-    .await
-    {
-        Ok(count) => count,
-        Err(e) => {
-            error!("Failed during task publishing: {}", e);
-            publishing_pb.finish_with_message(format!("Publishing failed: {}", e));
-            return Err(e);
-        }
-    };
+    let published_count =
+        match TextBlaster::producer_logic::publish_tasks(&args, &publish_channel, &publishing_pb)
+            .await
+        {
+            Ok(count) => count,
+            Err(e) => {
+                error!("Failed during task publishing: {}", e);
+                publishing_pb.finish_with_message(format!("Publishing failed: {}", e));
+                return Err(e);
+            }
+        };
 
     // Early exit if no tasks were published (nothing to wait for)
     if published_count == 0 {
@@ -147,7 +151,7 @@ async fn main() -> Result<()> {
     let (outcomes_received_count, success_count, filtered_count) =
         match TextBlaster::producer_logic::aggregate_results(
             &args,
-            &results_consume_channel,
+            consumer,
             published_count,
             &aggregation_pb,
         )

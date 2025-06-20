@@ -3,3 +3,4 @@
 pub mod parquet;
 pub mod pipeline;
 pub mod producer;
+pub mod worker;
