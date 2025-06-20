@@ -72,9 +72,9 @@ fn test_parquet_read_write_roundtrip() -> Result<()> {
     // and its fields are public.
     let reader_config = ParquetInputConfig {
         path: file_path_str.to_string(),
-        text_column: "content".to_string(), // Matches the field name in TextDocument and schema in ParquetWriter
-        id_column: Some("id".to_string()),  // Matches the field name
-        batch_size: Some(10),               // Optional, can be tested
+        text_column: "text".to_string(), // Matches the field name in TextDocument and schema in ParquetWriter
+        id_column: Some("id".to_string()), // Matches the field name
+        batch_size: Some(10),            // Optional, can be tested
     };
     let reader = ParquetReader::new(reader_config);
 

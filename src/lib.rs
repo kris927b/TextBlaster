@@ -16,6 +16,7 @@ pub mod utils;
 // pub use executor::{PipelineExecutor, ProcessingStep};
 
 pub mod producer_logic; // Declare the new module
+pub mod worker_logic;
 
 // The AmqpConnectionManager trait and its implementation have been removed from here
 // as per the new strategy focusing on TaskPublisherChannel defined in producer_logic.rs.

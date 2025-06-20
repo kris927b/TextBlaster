@@ -17,7 +17,7 @@ fn create_schema() -> SchemaRef {
     Arc::new(Schema::new(vec![
         Field::new("id", DataType::Utf8, false),
         Field::new("source", DataType::Utf8, false),
-        Field::new("content", DataType::Utf8, false),
+        Field::new("text", DataType::Utf8, false),
         // Store metadata as a single JSON string. Nullable if metadata might be empty.
         Field::new("metadata", DataType::Utf8, true),
     ]))

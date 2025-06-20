@@ -29,6 +29,10 @@ pub struct Args {
     #[arg(short = 'r', long, default_value = "results_queue")]
     pub results_queue: String,
 
+    /// Prefetch count (how many messages to buffer locally)
+    #[arg(long, default_value_t = 10)] // Adjust based on task duration/resources
+    pub prefetch_count: u16,
+
     /// Path to the output Parquet file
     #[arg(short = 'o', long, default_value = "output_processed.parquet")]
     pub output_file: String,
