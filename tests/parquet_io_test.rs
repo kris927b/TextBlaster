@@ -5,8 +5,8 @@ use tempfile::NamedTempFile;
 use TextBlaster::config::parquet::ParquetInputConfig; // Assuming this is public and in src/config.rs
 use TextBlaster::data_model::TextDocument;
 use TextBlaster::error::Result;
-use TextBlaster::pipeline::readers::parquet_reader::ParquetReader;
-use TextBlaster::pipeline::writers::parquet_writer::ParquetWriter; // Assuming a top-level Result or specific error type from src/error.rs
+use TextBlaster::pipeline::readers::{BaseReader, ParquetReader};
+use TextBlaster::pipeline::writers::{BaseWriter, ParquetWriter}; // Assuming a top-level Result or specific error type from src/error.rs
 
 // Helper function to create TextDocuments easily for tests
 fn create_sample_doc(
@@ -20,6 +20,7 @@ fn create_sample_doc(
         content: content.to_string(),
         source: source.to_string(),
         metadata: meta.unwrap_or_default(),
+        ..Default::default()
     }
 }
 

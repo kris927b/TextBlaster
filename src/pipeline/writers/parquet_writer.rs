@@ -11,6 +11,7 @@ use std::sync::Arc; // For serializing metadata
 // Adjust the import path if necessary
 use crate::data_model::TextDocument;
 use crate::error::{PipelineError, Result};
+use crate::pipeline::writers::BaseWriter;
 
 // Define the schema for TextDocument
 fn create_schema() -> SchemaRef {
@@ -49,9 +50,11 @@ impl ParquetWriter {
             writer: Some(writer),
         })
     }
+}
 
+impl BaseWriter for ParquetWriter {
     /// Writes a batch of TextDocuments to the Parquet file.
-    pub fn write_batch(&mut self, documents: &[TextDocument]) -> Result<()> {
+    fn write_batch(&mut self, documents: &[TextDocument]) -> Result<()> {
         if documents.is_empty() {
             return Ok(()); // Nothing to write
         }
@@ -107,69 +110,10 @@ impl ParquetWriter {
 
     /// Closes the Parquet writer and finalizes the file.
     /// This must be called to ensure all data is flushed and the file is valid.
-    pub fn close(mut self) -> Result<()> {
+    fn close(mut self) -> Result<()> {
         if let Some(writer) = self.writer.take() {
             writer.close()?; // Propagates ParquetError
         }
         Ok(())
     }
 }
-
-// Optional: Implement Drop to ensure close is called, although explicit close is better practice
-// impl Drop for ParquetWriter {
-//     fn drop(&mut self) {
-//         if self.writer.is_some() {
-//             eprintln!("Warning: ParquetWriter dropped without explicit close() call for file: {}", self.path);
-//             // Attempt to close, but ignore errors in drop
-//             let writer = self.writer.take().unwrap();
-//             let _ = writer.close();
-//          }
-//     }
-// }
-
-// --- Example Usage (Remove or place in tests/main.rs) ---
-/*
-// fn main() -> Result<()> {
-//     let docs = vec![
-//         TextDocument {
-            id: "doc1".to_string(),
-            source: "sourceA".to_string(),
-            content: "This is the first document.".to_string(),
-            metadata: vec![("key1".to_string(), "value1".to_string())].into_iter().collect(),
-        },
-        TextDocument {
-            id: "doc2".to_string(),
-            source: "sourceB".to_string(),
-            content: "Second document here.".to_string(),
-            metadata: HashMap::new(), // Empty metadata
-        },
-         TextDocument {
-            id: "doc3".to_string(),
-            source: "sourceC".to_string(),
-            content: "A third document.".to_string(),
-            metadata: vec![
-                ("lang".to_string(), "en".to_string()),
-                ("year".to_string(), "2025".to_string()),
-                ].into_iter().collect(),
-        },
-    ];
-
-    let output_path = "output_documents.parquet";
-
-    // Create writer
-    let mut writer = ParquetWriter::new(output_path)?;
-
-    // Write a batch
-    writer.write_batch(&docs[0..2])?; // Write first two docs
-
-    // Write another batch (optional)
-    writer.write_batch(&docs[2..3])?; // Write the third doc
-
-    // IMPORTANT: Close the writer to finalize the file
-    writer.close()?;
-
-    println!("Successfully wrote documents to {}", output_path);
-
-//     Ok(())
-// }
-*/

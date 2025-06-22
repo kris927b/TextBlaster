@@ -115,7 +115,7 @@ mod publish_tasks_tests {
     use TextBlaster::config::producer::Args;
     use TextBlaster::data_model::TextDocument;
     use TextBlaster::error::Result;
-    use TextBlaster::pipeline::writers::parquet_writer::ParquetWriter;
+    use TextBlaster::pipeline::writers::{BaseWriter, ParquetWriter};
     use TextBlaster::producer_logic::publish_tasks; // replace `my_crate` with your actual crate
 
     fn create_mock_args(input_path: String, queue_name: String) -> Args {
@@ -217,6 +217,7 @@ mod publish_tasks_tests {
             source: "test".into(),
             content: "Simple content".into(),
             metadata: [("lang".into(), "en".into())].into(),
+            ..Default::default()
         };
         let parquet: NamedTempFile = create_test_parquet_file(&[doc])?;
 
@@ -247,18 +248,21 @@ mod publish_tasks_tests {
                 source: "s".into(),
                 content: "1".into(),
                 metadata: HashMap::new(),
+                ..Default::default()
             },
             TextDocument {
                 id: "b".into(),
                 source: "s".into(),
                 content: "2".into(),
                 metadata: HashMap::new(),
+                ..Default::default()
             },
             TextDocument {
                 id: "c".into(),
                 source: "s".into(),
                 content: "3".into(),
                 metadata: HashMap::new(),
+                ..Default::default()
             },
         ];
         let parquet = create_test_parquet_file(&docs)?;
@@ -296,6 +300,7 @@ mod publish_tasks_tests {
             source: "unit".into(),
             content: "Testing empty metadata".into(),
             metadata: HashMap::new(),
+            ..Default::default()
         };
 
         let parquet = create_test_parquet_file(&[doc])?;
@@ -359,6 +364,7 @@ mod aggregate_results_tests {
             source: "test".to_string(),
             content: "exciting content".to_string(),
             metadata: HashMap::new(),
+            ..Default::default()
         }
     }
 
@@ -369,6 +375,7 @@ mod aggregate_results_tests {
             content: "Test document".to_string(),
             source: "test-src".to_string(),
             metadata: HashMap::new(),
+            ..Default::default()
         };
 
         let outcome = ProcessingOutcome::Success(doc);
