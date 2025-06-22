@@ -57,6 +57,7 @@ mod tests {
             source: "test_source".to_string(),
             content: "Hello, world! This is a test.".to_string(),
             metadata: HashMap::new(),
+            ..Default::default()
         };
 
         // Use a common tokenizer for testing, e.g., bert-base-uncased
@@ -95,6 +96,7 @@ mod tests {
             source: "test_source".to_string(),
             content: "Hello, world! This is a test.".to_string(),
             metadata: HashMap::new(),
+            ..Default::default()
         };
 
         // Use another common tokenizer for testing, e.g., gpt2
@@ -126,6 +128,7 @@ mod tests {
             source: "test_source".to_string(),
             content: "".to_string(),
             metadata: HashMap::new(),
+            ..Default::default()
         };
         let token_counter = TokenCounter::new("bert-base-uncased"); // Using bert, but could be any
         if let Ok(counter) = token_counter {

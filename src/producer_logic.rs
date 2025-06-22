@@ -4,8 +4,8 @@ use crate::config::producer::Args;
 use crate::data_model::ProcessingOutcome; // Still needed for aggregate_results
 use crate::data_model::TextDocument; // TextDocument is needed for aggregate_results
 use crate::error::{PipelineError, Result as AppResult};
-use crate::pipeline::readers::ParquetReader;
-use crate::pipeline::writers::parquet_writer::ParquetWriter;
+use crate::pipeline::readers::{BaseReader, ParquetReader};
+use crate::pipeline::writers::{BaseWriter, ParquetWriter};
 use crate::utils::prometheus_metrics::*;
 use futures::{pin_mut, Stream, StreamExt};
 use indicatif::ProgressBar;
@@ -203,8 +203,8 @@ pub async fn aggregate_results(
     let mapped_stream = consumer.filter_map(|delivery_result| async {
         match delivery_result {
             Ok(delivery) => {
-                let s = std::str::from_utf8(&delivery.data).unwrap();
-                warn!("{}", s);
+                // let s = std::str::from_utf8(&delivery.data).unwrap();
+                // warn!("{}", s);
                 match serde_json::from_slice::<ProcessingOutcome>(&delivery.data) {
                     Ok(outcome) => {
                         let _ = delivery.ack(BasicAckOptions::default()).await;

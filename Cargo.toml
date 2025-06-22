@@ -35,7 +35,7 @@ rand = "0.8" # Added rand dependency
 # {{ Add missing lapin trait dependencies }}
 tokio-executor-trait = "2.1"
 tokio-reactor-trait = "1.1"
-chrono = "0.4.41"
+chrono = { version = "0.4.41", features = ["serde"] }
 serde_yaml = "0.9.34"
 whatlang = "0.16.4"
 anyhow = "1.0.98"
