@@ -265,6 +265,7 @@ mod tests {
             source: "rep_test_source".to_string(),
             content: content.to_string(),
             metadata: StdHashMap::new(),
+            ..Default::default()
         }
     }
 

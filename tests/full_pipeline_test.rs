@@ -15,8 +15,8 @@ use testcontainers::{
 use TextBlaster::config::parquet::ParquetInputConfig;
 use TextBlaster::data_model::TextDocument;
 use TextBlaster::error::Result; // Assuming this is your crate's Result type
-use TextBlaster::pipeline::readers::parquet_reader::ParquetReader;
-use TextBlaster::pipeline::writers::parquet_writer::ParquetWriter;
+use TextBlaster::pipeline::readers::{BaseReader, ParquetReader};
+use TextBlaster::pipeline::writers::{BaseWriter, ParquetWriter};
 
 // Helper to create TextDocument instances easily
 fn create_doc(id: &str, content: &str, source: &str, lang: Option<&str>) -> TextDocument {
@@ -29,6 +29,7 @@ fn create_doc(id: &str, content: &str, source: &str, lang: Option<&str>) -> Text
         content: content.to_string(),
         source: source.to_string(),
         metadata,
+        ..Default::default()
     }
 }
 
@@ -317,7 +318,7 @@ async fn test_full_pipeline_e2e() -> Result<()> {
     let output_reader_config = ParquetInputConfig {
         path: output_parquet_file.to_str().unwrap().to_string(),
         text_column: "text".to_string(),
-        id_column: Some("id".to_string()),
+        id_column: "id".to_string(),
         batch_size: Some(10),
     };
     let output_reader = ParquetReader::new(output_reader_config);
@@ -337,7 +338,7 @@ async fn test_full_pipeline_e2e() -> Result<()> {
     let excluded_reader_config = ParquetInputConfig {
         path: excluded_parquet_file.to_str().unwrap().to_string(),
         text_column: "text".to_string(),
-        id_column: Some("id".to_string()),
+        id_column: "id".to_string(),
         batch_size: Some(10),
     };
     let excluded_reader = ParquetReader::new(excluded_reader_config);

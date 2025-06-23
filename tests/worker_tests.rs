@@ -67,6 +67,7 @@ async fn test_success_path() {
         content: "This is a test".into(),
         source: "test-suite".into(),
         metadata: HashMap::new(),
+        ..Default::default()
     };
 
     let raw = serde_json::to_vec(&input_doc).unwrap();
@@ -98,6 +99,7 @@ async fn test_filtered_outcome() {
         content: "Block me".into(),
         source: "filter-test".into(),
         metadata: HashMap::new(),
+        ..Default::default()
     };
 
     let raw = serde_json::to_vec(&input_doc).unwrap();
@@ -122,6 +124,7 @@ async fn test_failing_step_returns_none() {
         content: "Cause failure".into(),
         source: "fail-test".into(),
         metadata: HashMap::new(),
+        ..Default::default()
     };
 
     let raw = serde_json::to_vec(&input_doc).unwrap();
@@ -144,6 +147,7 @@ async fn test_chained_steps_success() {
         content: "Chain of steps".into(),
         source: "chained".into(),
         metadata: HashMap::new(),
+        ..Default::default()
     };
 
     let raw = serde_json::to_vec(&input_doc).unwrap();

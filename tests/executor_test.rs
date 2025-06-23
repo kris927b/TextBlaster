@@ -11,6 +11,7 @@ fn create_test_document(id: &str, content: &str) -> TextDocument {
         source: "test_source".to_string(),
         content: content.to_string(),
         metadata: HashMap::new(),
+        ..Default::default()
     }
 }
 

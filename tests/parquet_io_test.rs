@@ -1,139 +1,177 @@
+use chrono::{NaiveDate, NaiveDateTime};
+use polars::prelude::{ParquetReader as PolarsParquetReader, SerReader};
 use std::collections::HashMap;
+use std::fs::File;
 use tempfile::NamedTempFile;
-
-// Import necessary items from your crate
-use TextBlaster::config::parquet::ParquetInputConfig; // Assuming this is public and in src/config.rs
+use TextBlaster::config::parquet::ParquetInputConfig;
 use TextBlaster::data_model::TextDocument;
 use TextBlaster::error::Result;
-use TextBlaster::pipeline::readers::parquet_reader::ParquetReader;
-use TextBlaster::pipeline::writers::parquet_writer::ParquetWriter; // Assuming a top-level Result or specific error type from src/error.rs
+use TextBlaster::pipeline::readers::{BaseReader, ParquetReader};
+use TextBlaster::pipeline::writers::{BaseWriter, ParquetWriter};
 
-// Helper function to create TextDocuments easily for tests
 fn create_sample_doc(
     id: &str,
     content: &str,
     source: &str,
     meta: Option<HashMap<String, String>>,
+    added: Option<NaiveDate>,
+    created: Option<(NaiveDateTime, NaiveDateTime)>,
 ) -> TextDocument {
     TextDocument {
         id: id.to_string(),
         content: content.to_string(),
         source: source.to_string(),
         metadata: meta.unwrap_or_default(),
+        added,
+        created,
     }
 }
 
 #[test]
 fn test_parquet_read_write_roundtrip() -> Result<()> {
-    // 1. Create a temporary file for writing Parquet data
     let temp_file = NamedTempFile::new().expect("Failed to create temp file");
-    let file_path_str = temp_file
-        .path()
-        .to_str()
-        .expect("Temp file path is not valid UTF-8");
+    let file_path_str = temp_file.path().to_str().unwrap();
 
-    // 2. Define sample documents
+    let added = NaiveDate::from_ymd_opt(2024, 1, 1).unwrap();
+    let created_start =
+        NaiveDateTime::parse_from_str("2024-01-01T12:00:00", "%Y-%m-%dT%H:%M:%S").unwrap();
+    let created_end =
+        NaiveDateTime::parse_from_str("2024-01-02T12:00:00", "%Y-%m-%dT%H:%M:%S").unwrap();
+
     let mut original_docs = vec![
         create_sample_doc(
             "doc1",
             "Hello Parquet!",
-            "source1",
+            "file1.txt",
             Some(
                 [("key1".to_string(), "val1".to_string())]
-                    .iter()
-                    .cloned()
+                    .into_iter()
                     .collect(),
             ),
+            Some(added),
+            Some((created_start, created_end)),
         ),
-        create_sample_doc("doc2", "Testing read and write.", "source2", None),
+        create_sample_doc("doc2", "Test doc 2", "file2.txt", None, None, None),
         create_sample_doc(
             "doc3",
-            "Another document with metadata.",
-            "source3",
+            "Final doc",
+            "file3.txt",
             Some(
-                [
-                    ("lang".to_string(), "en".to_string()),
-                    ("topic".to_string(), "test".to_string()),
-                ]
-                .iter()
-                .cloned()
-                .collect(),
+                [("lang".to_string(), "en".to_string())]
+                    .into_iter()
+                    .collect(),
             ),
+            Some(added),
+            Some((created_start, created_end)),
         ),
     ];
 
-    // 3. Write documents using ParquetWriter
     let mut writer = ParquetWriter::new(file_path_str)?;
     writer.write_batch(&original_docs)?;
-    writer.close()?; // Important to close the writer to finalize the file
+    writer.close()?;
 
-    // 4. Read documents back using ParquetReader
-    // Ensure ParquetInputConfig is accessible via rust_data::config::ParquetInputConfig
-    // and its fields are public.
     let reader_config = ParquetInputConfig {
         path: file_path_str.to_string(),
-        text_column: "text".to_string(), // Matches the field name in TextDocument and schema in ParquetWriter
-        id_column: Some("id".to_string()), // Matches the field name
-        batch_size: Some(10),            // Optional, can be tested
+        text_column: "text".to_string(),
+        id_column: "id".to_string(),
+        batch_size: Some(10),
     };
-    let reader = ParquetReader::new(reader_config);
 
-    // Collect results, handling potential errors during read for each document
-    let mut read_docs: Vec<TextDocument> = Vec::new();
-    let document_iterator = reader.read_documents()?;
-    for result in document_iterator {
-        match result {
-            Ok(doc) => read_docs.push(doc),
-            Err(e) => {
-                // If a single document fails to parse, we might want to log it or fail the test.
-                // For this test, let's propagate the error.
-                eprintln!("Error reading document: {:?}", e);
-                return Err(e);
-            }
-        }
+    let reader = ParquetReader::new(reader_config);
+    let mut read_docs = vec![];
+    for result in reader.read_documents()? {
+        read_docs.push(result?);
     }
 
-    // 5. Assertions
-    assert_eq!(
-        original_docs.len(),
-        read_docs.len(),
-        "Number of documents should match"
-    );
+    assert_eq!(original_docs.len(), read_docs.len());
 
-    // Sort both lists by ID to ensure consistent order for comparison
-    // This is important because Parquet doesn't guarantee row order.
     original_docs.sort_by(|a, b| a.id.cmp(&b.id));
     read_docs.sort_by(|a, b| a.id.cmp(&b.id));
 
     for (original, read) in original_docs.iter().zip(read_docs.iter()) {
-        assert_eq!(
-            original.id, read.id,
-            "Document ID should match for ID: {}",
-            original.id
-        );
-        assert_eq!(
-            original.content, read.content,
-            "Document content should match for ID: {}",
-            original.id
-        );
-
-        // ParquetReader currently sets 'source' to the file path.
-        assert_eq!(
-            read.source, file_path_str,
-            "Read document source should be the file path for ID: {}",
-            original.id
-        );
-
-        // {{ Updated metadata assertion }}
-        // Now that ParquetReader attempts to read metadata, compare it with the original.
-        // Note: If original metadata was None (passed to create_sample_doc), it becomes an empty HashMap.
-        // The reader will also produce an empty HashMap if metadata column is missing, null, or JSON is empty/invalid.
-        assert_eq!(
-            original.metadata, read.metadata,
-            "Document metadata should match for ID: {}",
-            original.id
-        );
+        assert_eq!(original.id, read.id);
+        assert_eq!(original.content, read.content);
+        assert_eq!(original.source, read.source);
+        assert_eq!(original.metadata, read.metadata);
+        assert_eq!(original.added, read.added);
+        assert_eq!(original.created, read.created);
     }
+
+    Ok(())
+}
+
+#[test]
+fn test_parquet_missing_column_handling() -> Result<()> {
+    let temp_file = NamedTempFile::new().expect("Failed to create temp file");
+    let file_path_str = temp_file.path().to_str().unwrap();
+
+    // Write only ID and text
+    let docs = vec![TextDocument {
+        id: "missing".into(),
+        content: "missing column".into(),
+        source: "dummy".into(),
+        metadata: HashMap::new(),
+        added: None,
+        created: None,
+    }];
+
+    let mut writer = ParquetWriter::new(file_path_str)?;
+    writer.write_batch(&docs)?;
+    writer.close()?;
+
+    // Now try to read it with a config expecting a column that doesn't exist
+    let bad_config = ParquetInputConfig {
+        path: file_path_str.to_string(),
+        text_column: "text".to_string(),
+        id_column: "nonexistent_id".to_string(), // This column does not exist
+        batch_size: None,
+    };
+
+    let reader = ParquetReader::new(bad_config);
+    let result = reader.read_documents();
+    assert!(result.is_err(), "Expected error due to missing column");
+
+    Ok(())
+}
+
+#[test]
+fn test_parquet_file_readable_in_polars() -> Result<()> {
+    // Write a sample document to a temporary Parquet file
+    let temp_file = NamedTempFile::new().expect("Failed to create temp file");
+    let file_path_str = temp_file.path().to_str().unwrap();
+
+    let docs = vec![create_sample_doc(
+        "parquet-test-id",
+        "text",
+        "source",
+        None,
+        None,
+        None,
+    )];
+
+    let mut writer = ParquetWriter::new(file_path_str)?;
+    writer
+        .write_batch(&docs)
+        .expect("Write batch in `test_parquet_file_readable_in_polars` failed.");
+    writer
+        .close()
+        .expect("Closing the parquet writer in `test_parquet_file_readable_in_polars` failed.");
+
+    // Read the file using Polars
+    let file = File::open(file_path_str)?;
+    let df = PolarsParquetReader::new(file).finish().unwrap();
+
+    // Check that the DataFrame has the expected id
+    assert!(
+        df.column("id")
+            .unwrap()
+            .str()
+            .unwrap()
+            .get(0)
+            .unwrap()
+            .contains("parquet-test-id"),
+        "Polars did not return any row with id = 'parquet-test-id'"
+    );
 
     Ok(())
 }

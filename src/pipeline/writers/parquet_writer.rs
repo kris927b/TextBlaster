@@ -1,175 +1,165 @@
 use std::fs::File;
-// use std::path::Path; // {{ Remove this unused import }}
-use arrow::array::{ArrayRef, RecordBatch, StringArray};
+use std::sync::Arc;
+
+use arrow::array::{
+    ArrayRef, Date32Builder, RecordBatch, StringBuilder, StructArray, TimestampMicrosecondBuilder,
+};
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
+use chrono::Datelike;
 use parquet::arrow::arrow_writer::ArrowWriter;
 use parquet::file::properties::WriterProperties;
 use serde_json;
-use std::sync::Arc; // For serializing metadata
 
-// Assuming your error module and Result type are defined like this
-// Adjust the import path if necessary
 use crate::data_model::TextDocument;
 use crate::error::{PipelineError, Result};
+use crate::pipeline::writers::BaseWriter;
 
-// Define the schema for TextDocument
 fn create_schema() -> SchemaRef {
     Arc::new(Schema::new(vec![
         Field::new("id", DataType::Utf8, false),
         Field::new("source", DataType::Utf8, false),
         Field::new("text", DataType::Utf8, false),
-        // Store metadata as a single JSON string. Nullable if metadata might be empty.
+        Field::new("added", DataType::Date32, true),
+        Field::new(
+            "created",
+            DataType::Struct(
+                vec![
+                    Field::new(
+                        "start",
+                        DataType::Timestamp(TimeUnit::Microsecond, None),
+                        true,
+                    ),
+                    Field::new(
+                        "end",
+                        DataType::Timestamp(TimeUnit::Microsecond, None),
+                        true,
+                    ),
+                ]
+                .into(),
+            ),
+            true,
+        ),
         Field::new("metadata", DataType::Utf8, true),
     ]))
 }
 
+use arrow::datatypes::TimeUnit;
+
 /// Writes TextDocuments to a Parquet file.
 pub struct ParquetWriter {
-    #[allow(dead_code)] // Allow unused field for now, might be used later (e.g., in Drop)
-    path: String,
     schema: SchemaRef,
-    writer: Option<ArrowWriter<File>>, // Keep writer open for potentially writing multiple batches
+    writer: Option<ArrowWriter<File>>,
 }
 
 impl ParquetWriter {
-    /// Creates a new ParquetWriter and opens the file for writing.
-    /// The file will be created if it doesn't exist, or truncated if it does.
     pub fn new(path: &str) -> Result<Self> {
         let schema = create_schema();
         let file = File::create(path)?;
-        let props = WriterProperties::builder()
-            // Add any specific writer properties here, e.g., compression
-            // .set_compression(parquet::basic::Compression::SNAPPY)
-            .build();
+        let props = WriterProperties::builder().build();
         let writer = ArrowWriter::try_new(file, schema.clone(), Some(props))?;
 
         Ok(ParquetWriter {
-            path: path.to_string(),
             schema,
             writer: Some(writer),
         })
     }
+}
 
-    /// Writes a batch of TextDocuments to the Parquet file.
-    pub fn write_batch(&mut self, documents: &[TextDocument]) -> Result<()> {
+impl BaseWriter for ParquetWriter {
+    fn write_batch(&mut self, documents: &[TextDocument]) -> Result<()> {
         if documents.is_empty() {
-            return Ok(()); // Nothing to write
+            return Ok(());
         }
 
-        if self.writer.is_none() {
-            // Handle error: writer was already closed or failed to initialize
-            // You might want a more specific error type here
-            return Err(PipelineError::Unexpected(
-                "The parquet writer was already closed".to_string(),
-            ));
-        }
-
-        // 1. Convert TextDocuments to Arrow Arrays
-        // Use Vec::with_capacity for slight performance improvement
-        let mut ids = Vec::with_capacity(documents.len());
-        let mut sources = Vec::with_capacity(documents.len());
-        let mut contents = Vec::with_capacity(documents.len());
-        let mut metadata_json = Vec::with_capacity(documents.len());
+        let mut id_builder = StringBuilder::new(); // documents.len());
+        let mut source_builder = StringBuilder::new(); // documents.len());
+        let mut text_builder = StringBuilder::new(); // documents.len());
+        let mut added_builder = Date32Builder::new(); // documents.len());
+        let mut created_start_builder = TimestampMicrosecondBuilder::new(); // documents.len());
+        let mut created_end_builder = TimestampMicrosecondBuilder::new(); // documents.len());
+        let mut metadata_builder = StringBuilder::new(); //documents.len());
 
         for doc in documents {
-            ids.push(doc.id.clone());
-            sources.push(doc.source.clone());
-            contents.push(doc.content.clone());
-            // Serialize metadata HashMap to JSON string for each document
-            if doc.metadata.is_empty() {
-                metadata_json.push(None); // Represent empty metadata as null in Parquet
+            id_builder.append_value(&doc.id);
+            source_builder.append_value(&doc.source);
+            text_builder.append_value(&doc.content);
+
+            // added: Option<NaiveDate>
+            if let Some(date) = doc.added {
+                let days = date.num_days_from_ce();
+                added_builder.append_value(days);
             } else {
-                // Push Some(json_string) or None if serialization fails
-                metadata_json.push(serde_json::to_string(&doc.metadata).ok());
+                added_builder.append_null();
+            }
+
+            // created: Option<(NaiveDateTime, NaiveDateTime)>
+            if let Some((start, end)) = &doc.created {
+                created_start_builder.append_value(start.and_utc().timestamp_micros());
+                created_end_builder.append_value(end.and_utc().timestamp_micros());
+            } else {
+                created_start_builder.append_null();
+                created_end_builder.append_null();
+            }
+
+            if doc.metadata.is_empty() {
+                metadata_builder.append_null();
+            } else {
+                let json = serde_json::to_string(&doc.metadata).map_err(|e| {
+                    PipelineError::Unexpected(format!("Metadata serialization failed: {e}"))
+                })?;
+                metadata_builder.append_value(json);
             }
         }
 
-        // Create Arrow Arrays
-        let id_array = Arc::new(StringArray::from(ids)) as ArrayRef;
-        let source_array = Arc::new(StringArray::from(sources)) as ArrayRef;
-        let content_array = Arc::new(StringArray::from(contents)) as ArrayRef;
-        let metadata_array = Arc::new(StringArray::from(metadata_json)) as ArrayRef; // Handles Vec<Option<String>>
+        let id_array = Arc::new(id_builder.finish()) as ArrayRef;
+        let source_array = Arc::new(source_builder.finish()) as ArrayRef;
+        let text_array = Arc::new(text_builder.finish()) as ArrayRef;
+        let added_array = Arc::new(added_builder.finish()) as ArrayRef;
 
-        // 2. Create RecordBatch
+        let created_array = Arc::new(StructArray::from(vec![
+            (
+                Arc::new(Field::new(
+                    "start",
+                    DataType::Timestamp(TimeUnit::Microsecond, None),
+                    true,
+                )),
+                Arc::new(created_start_builder.finish()) as ArrayRef,
+            ),
+            (
+                Arc::new(Field::new(
+                    "end",
+                    DataType::Timestamp(TimeUnit::Microsecond, None),
+                    true,
+                )),
+                Arc::new(created_end_builder.finish()) as ArrayRef,
+            ),
+        ]));
+
+        let metadata_array = Arc::new(metadata_builder.finish()) as ArrayRef;
+
         let batch = RecordBatch::try_new(
             self.schema.clone(),
-            vec![id_array, source_array, content_array, metadata_array],
-        )?; // Propagates ArrowError if creation fails
+            vec![
+                id_array,
+                source_array,
+                text_array,
+                added_array,
+                created_array,
+                metadata_array,
+            ],
+        )?;
 
-        // 3. Write the batch using the stored writer
         if let Some(writer) = self.writer.as_mut() {
-            writer.write(&batch)?; // Propagates ParquetError
+            writer.write(&batch)?;
         }
-        // The error case where writer is None is handled above
 
         Ok(())
     }
 
-    /// Closes the Parquet writer and finalizes the file.
-    /// This must be called to ensure all data is flushed and the file is valid.
-    pub fn close(mut self) -> Result<()> {
+    fn close(mut self) -> Result<()> {
         if let Some(writer) = self.writer.take() {
-            writer.close()?; // Propagates ParquetError
+            writer.close()?;
         }
         Ok(())
     }
 }
-
-// Optional: Implement Drop to ensure close is called, although explicit close is better practice
-// impl Drop for ParquetWriter {
-//     fn drop(&mut self) {
-//         if self.writer.is_some() {
-//             eprintln!("Warning: ParquetWriter dropped without explicit close() call for file: {}", self.path);
-//             // Attempt to close, but ignore errors in drop
-//             let writer = self.writer.take().unwrap();
-//             let _ = writer.close();
-//          }
-//     }
-// }
-
-// --- Example Usage (Remove or place in tests/main.rs) ---
-/*
-// fn main() -> Result<()> {
-//     let docs = vec![
-//         TextDocument {
-            id: "doc1".to_string(),
-            source: "sourceA".to_string(),
-            content: "This is the first document.".to_string(),
-            metadata: vec![("key1".to_string(), "value1".to_string())].into_iter().collect(),
-        },
-        TextDocument {
-            id: "doc2".to_string(),
-            source: "sourceB".to_string(),
-            content: "Second document here.".to_string(),
-            metadata: HashMap::new(), // Empty metadata
-        },
-         TextDocument {
-            id: "doc3".to_string(),
-            source: "sourceC".to_string(),
-            content: "A third document.".to_string(),
-            metadata: vec![
-                ("lang".to_string(), "en".to_string()),
-                ("year".to_string(), "2025".to_string()),
-                ].into_iter().collect(),
-        },
-    ];
-
-    let output_path = "output_documents.parquet";
-
-    // Create writer
-    let mut writer = ParquetWriter::new(output_path)?;
-
-    // Write a batch
-    writer.write_batch(&docs[0..2])?; // Write first two docs
-
-    // Write another batch (optional)
-    writer.write_batch(&docs[2..3])?; // Write the third doc
-
-    // IMPORTANT: Close the writer to finalize the file
-    writer.close()?;
-
-    println!("Successfully wrote documents to {}", output_path);
-
-//     Ok(())
-// }
-*/
