@@ -30,7 +30,10 @@ pub async fn publish_tasks(
     let parquet_config = ParquetInputConfig {
         path: args.input_file.clone(),
         text_column: args.text_column.clone(),
-        id_column: args.id_column.clone(),
+        id_column: args
+            .id_column
+            .clone()
+            .expect("Expected there to be a defined id column"),
         batch_size: Some(1024),
     };
     let reader = ParquetReader::new(parquet_config);

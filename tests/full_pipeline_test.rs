@@ -318,7 +318,7 @@ async fn test_full_pipeline_e2e() -> Result<()> {
     let output_reader_config = ParquetInputConfig {
         path: output_parquet_file.to_str().unwrap().to_string(),
         text_column: "text".to_string(),
-        id_column: Some("id".to_string()),
+        id_column: "id".to_string(),
         batch_size: Some(10),
     };
     let output_reader = ParquetReader::new(output_reader_config);
@@ -338,7 +338,7 @@ async fn test_full_pipeline_e2e() -> Result<()> {
     let excluded_reader_config = ParquetInputConfig {
         path: excluded_parquet_file.to_str().unwrap().to_string(),
         text_column: "text".to_string(),
-        id_column: Some("id".to_string()),
+        id_column: "id".to_string(),
         batch_size: Some(10),
     };
     let excluded_reader = ParquetReader::new(excluded_reader_config);

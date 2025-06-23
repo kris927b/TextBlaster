@@ -6,13 +6,13 @@ use crate::{
 };
 
 use arrow::array::{
-    Array, ArrayRef, Date32Array, LargeStringArray, RecordBatchReader, StringArray, StructArray,
+    Array, ArrayRef, Date32Array, RecordBatchReader, StringArray, StructArray,
     TimestampMicrosecondArray,
 };
 use arrow::datatypes::{DataType, SchemaRef};
 use chrono::{DateTime, NaiveDate, NaiveDateTime};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
-use std::{collections::HashMap, fs::File, sync::Arc};
+use std::{collections::HashMap, fs::File};
 use tracing::warn;
 
 pub struct ParquetReader {
@@ -76,14 +76,15 @@ impl BaseReader for ParquetReader {
 
         // Required column
         let text_idx = Self::get_required_column_index(&schema, &self.config.text_column)?;
+        let id_idx = Self::get_required_column_index(&schema, &self.config.id_column)?;
         Self::validate_string_column(&schema, text_idx, &self.config.text_column)?;
 
         // Optional column indices
-        let id_idx = self
-            .config
-            .id_column
-            .as_ref()
-            .and_then(|id| schema.index_of(id).ok());
+        // let id_idx = self
+        //     .config
+        //     .id_column
+        //     .as_ref()
+        //     .and_then(|id| schema.index_of(id).ok());
         let source_idx = schema.index_of("source").ok();
         let added_idx = schema.index_of("added").ok();
         let created_idx = schema.index_of("created").ok();
@@ -96,7 +97,7 @@ impl BaseReader for ParquetReader {
         });
 
         let text_col_name = self.config.text_column.clone();
-        let _id_col_name = self.config.id_column.clone();
+        let id_col_name = self.config.id_column.clone();
         let path_str = self.config.path.clone();
 
         let iter = reader
@@ -110,19 +111,25 @@ impl BaseReader for ParquetReader {
                         .downcast_ref::<StringArray>()
                         .expect("Text column downcast failed");
 
-                    let id_arr = id_idx.and_then(|idx| {
-                        let arr = batch.column(idx);
-                        if let Some(arr) = arr.as_any().downcast_ref::<StringArray>() {
-                            Some(Arc::new(arr.clone()))
-                        } else if let Some(large) = arr.as_any().downcast_ref::<LargeStringArray>()
-                        {
-                            let converted: StringArray =
-                                large.iter().map(|s| s.map(|v| v.to_string())).collect();
-                            Some(Arc::new(converted))
-                        } else {
-                            None
-                        }
-                    });
+                    let id_arr = batch
+                        .column(id_idx)
+                        .as_any()
+                        .downcast_ref::<StringArray>()
+                        .expect("Text column downcast failed");
+
+                    // let id_arr = id_idx.and_then(|idx| {
+                    //     let arr = batch.column(idx);
+                    //     if let Some(arr) = arr.as_any().downcast_ref::<StringArray>() {
+                    //         Some(Arc::new(arr.clone()))
+                    //     } else if let Some(large) = arr.as_any().downcast_ref::<LargeStringArray>()
+                    //     {
+                    //         let converted: StringArray =
+                    //             large.iter().map(|s| s.map(|v| v.to_string())).collect();
+                    //         Some(Arc::new(converted))
+                    //     } else {
+                    //         None
+                    //     }
+                    // });
 
                     let source_arr = source_idx.and_then(|idx| {
                         batch
@@ -146,6 +153,7 @@ impl BaseReader for ParquetReader {
                     (0..num_rows)
                         .map({
                             let txt_value = text_col_name.clone();
+                            let id_value = id_col_name.clone();
                             let path_value = path_str.clone();
                             move |i| {
                                 if text_arr.is_null(i) {
@@ -156,16 +164,15 @@ impl BaseReader for ParquetReader {
                                     )));
                                 }
 
-                                let id = id_arr
-                                    .as_ref()
-                                    .and_then(|arr| {
-                                        if arr.is_null(i) {
-                                            None
-                                        } else {
-                                            Some(arr.value(i).to_string())
-                                        }
-                                    })
-                                    .unwrap_or_else(|| format!("{}_row_{}", path_value.clone(), i));
+                                if id_arr.is_null(i) {
+                                    return Err(PipelineError::Unexpected(format!(
+                                        "Row {} has null id column '{}'",
+                                        i,
+                                        id_value.clone()
+                                    )));
+                                }
+
+                                let id = id_arr.value(i).to_string();
 
                                 let content = text_arr.value(i).to_string();
 
