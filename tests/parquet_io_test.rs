@@ -1,5 +1,7 @@
 use chrono::{NaiveDate, NaiveDateTime};
+use polars::prelude::{ParquetReader as PolarsParquetReader, SerReader};
 use std::collections::HashMap;
+use std::fs::File;
 use tempfile::NamedTempFile;
 use TextBlaster::config::parquet::ParquetInputConfig;
 use TextBlaster::data_model::TextDocument;
@@ -133,35 +135,43 @@ fn test_parquet_missing_column_handling() -> Result<()> {
 }
 
 #[test]
-fn test_parquet_file_readable_in_duckdb() -> Result<()> {
+fn test_parquet_file_readable_in_polars() -> Result<()> {
+    // Write a sample document to a temporary Parquet file
     let temp_file = NamedTempFile::new().expect("Failed to create temp file");
     let file_path_str = temp_file.path().to_str().unwrap();
 
-    let docs = vec![create_sample_doc("a", "text", "source", None, None, None)];
+    let docs = vec![create_sample_doc(
+        "parquet-test-id",
+        "text",
+        "source",
+        None,
+        None,
+        None,
+    )];
 
     let mut writer = ParquetWriter::new(file_path_str)?;
-    writer.write_batch(&docs)?;
-    writer.close()?;
+    writer
+        .write_batch(&docs)
+        .expect("Write batch in `test_parquet_file_readable_in_polars` failed.");
+    writer
+        .close()
+        .expect("Closing the parquet writer in `test_parquet_file_readable_in_polars` failed.");
 
-    let conn = duckdb::Connection::open_in_memory().expect("DuckDB in-memory open failed");
-    let query = format!(
-        "SELECT * FROM read_parquet('{}')",
-        file_path_str.replace("'", "''")
+    // Read the file using Polars
+    let file = File::open(file_path_str)?;
+    let df = PolarsParquetReader::new(file).finish().unwrap();
+
+    // Check that the DataFrame has the expected id
+    assert!(
+        df.column("id")
+            .unwrap()
+            .str()
+            .unwrap()
+            .get(0)
+            .unwrap()
+            .contains("parquet-test-id"),
+        "Polars did not return any row with id = 'parquet-test-id'"
     );
-    let mut stmt = conn.prepare(&query).expect("DuckDB query failed");
-    let rows = stmt
-        .query_map([], |row| {
-            let id: String = row.get(0)?;
-            Ok(id)
-        })
-        .expect("Query mapping failed in parquet test");
 
-    let mut found_row = false;
-    for id_result in rows {
-        let id = id_result.expect("Reading id from row failed in parquet test");
-        assert_eq!(id, "a");
-        found_row = true;
-    }
-    assert!(found_row, "DuckDB did not return any rows");
     Ok(())
 }
