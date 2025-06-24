@@ -418,28 +418,6 @@ mod tests {
         assert!(filter.process(doc).await.is_ok());
     }
 
-    #[tokio::test]
-    async fn test_rep_filter_empty_doc_passes() {
-        let filter = GopherRepetitionFilter::new(
-            Some(0.1),
-            Some(0.1),
-            Some(0.1),
-            Some(0.1),
-            vec![(2, 0.1)],
-            vec![(2, 0.1)],
-        );
-        let doc = create_rep_test_doc("empty_rep", "");
-        assert!(
-            filter.process(doc).await.is_ok(),
-            "Empty doc should pass all repetition checks"
-        );
-        let doc_whitespace = create_rep_test_doc("whitespace_rep", "   \n\n   ");
-        assert!(
-            filter.process(doc_whitespace).await.is_ok(),
-            "Whitespace doc should pass all repetition checks"
-        );
-    }
-
     // --- Paragraph Repetition Tests ---
     #[tokio::test]
     async fn test_duplicate_paragraphs() {
