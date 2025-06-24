@@ -60,48 +60,17 @@ impl ProcessingStep for GopherRepetitionFilter {
         if trimmed_text.is_empty() {
             document.metadata.insert(
                 "gopher_repetition_filter_status".to_string(),
-                "skipped_empty_content".to_string(),
+                "filtered".to_string(),
             );
-            // Add 0.0 for all potential ratios for consistency if downstream expects them
-            // For thresholds that are Some (i.e., active)
-            if self.dup_para_frac.is_some() {
-                document.metadata.insert(
-                    "gopher_dup_para_elems_ratio".to_string(),
-                    "0.0000".to_string(),
-                );
-            }
-            if self.dup_para_char_frac.is_some() {
-                document.metadata.insert(
-                    "gopher_dup_para_chars_ratio".to_string(),
-                    "0.0000".to_string(),
-                );
-            }
-            if self.dup_line_frac.is_some() {
-                document.metadata.insert(
-                    "gopher_dup_line_elems_ratio".to_string(),
-                    "0.0000".to_string(),
-                );
-            }
-            if self.dup_line_char_frac.is_some() {
-                document.metadata.insert(
-                    "gopher_dup_line_chars_ratio".to_string(),
-                    "0.0000".to_string(),
-                );
-            }
-            // For configured n-grams
-            for &(n, _) in &self.top_n_grams {
-                document.metadata.insert(
-                    format!("gopher_top_{}_gram_char_ratio", n),
-                    "0.0000".to_string(),
-                );
-            }
-            for &(n, _) in &self.dup_n_grams {
-                document.metadata.insert(
-                    format!("gopher_all_dup_{}_gram_char_ratio", n),
-                    "0.0000".to_string(),
-                );
-            }
-            return Ok(document);
+            document.metadata.insert(
+                "gopher_repetition_filter_reason".to_string(),
+                "skipping empty content".to_string(),
+            );
+
+            return Err(PipelineError::DocumentFiltered {
+                document: Box::new(document),
+                reason: "skipping empty content".to_string(),
+            });
         }
 
         let mut filter_reasons: Vec<String> = Vec::new();
@@ -119,10 +88,10 @@ impl ProcessingStep for GopherRepetitionFilter {
         let para_len = paragraphs.len().max(1) as f64;
 
         let ratio_para_dup_elems = para_dup_elems as f64 / para_len;
-        document.metadata.insert(
-            "gopher_dup_para_elems_ratio".to_string(),
-            format!("{:.4}", ratio_para_dup_elems),
-        );
+        // document.metadata.insert(
+        //     "gopher_dup_para_elems_ratio".to_string(),
+        //     format!("{:.4}", ratio_para_dup_elems),
+        // );
         if let Some(threshold) = self.dup_para_frac {
             if ratio_para_dup_elems > threshold {
                 filter_reasons.push(format!(
@@ -133,10 +102,10 @@ impl ProcessingStep for GopherRepetitionFilter {
         }
 
         let ratio_para_dup_chars = para_dup_chars as f64 / text_char_len;
-        document.metadata.insert(
-            "gopher_dup_para_chars_ratio".to_string(),
-            format!("{:.4}", ratio_para_dup_chars),
-        );
+        // document.metadata.insert(
+        //     "gopher_dup_para_chars_ratio".to_string(),
+        //     format!("{:.4}", ratio_para_dup_chars),
+        // );
         if let Some(threshold) = self.dup_para_char_frac {
             if ratio_para_dup_chars > threshold {
                 filter_reasons.push(format!(
@@ -159,10 +128,10 @@ impl ProcessingStep for GopherRepetitionFilter {
         let line_len = lines.len().max(1) as f64;
 
         let ratio_line_dup_elems = line_dup_elems as f64 / line_len;
-        document.metadata.insert(
-            "gopher_dup_line_elems_ratio".to_string(),
-            format!("{:.4}", ratio_line_dup_elems),
-        );
+        // document.metadata.insert(
+        //     "gopher_dup_line_elems_ratio".to_string(),
+        //     format!("{:.4}", ratio_line_dup_elems),
+        // );
         if let Some(threshold) = self.dup_line_frac {
             if ratio_line_dup_elems > threshold {
                 filter_reasons.push(format!(
@@ -173,10 +142,10 @@ impl ProcessingStep for GopherRepetitionFilter {
         }
 
         let ratio_line_dup_chars = line_dup_chars as f64 / text_char_len;
-        document.metadata.insert(
-            "gopher_dup_line_chars_ratio".to_string(),
-            format!("{:.4}", ratio_line_dup_chars),
-        );
+        // document.metadata.insert(
+        //     "gopher_dup_line_chars_ratio".to_string(),
+        //     format!("{:.4}", ratio_line_dup_chars),
+        // );
         if let Some(threshold) = self.dup_line_char_frac {
             if ratio_line_dup_chars > threshold {
                 filter_reasons.push(format!(
@@ -196,10 +165,10 @@ impl ProcessingStep for GopherRepetitionFilter {
             let top_len_contribution = find_top_duplicate(&n_grams);
             let ratio_top_n_gram_chars = top_len_contribution as f64 / text_char_len;
 
-            document.metadata.insert(
-                format!("gopher_top_{}_gram_char_ratio", n),
-                format!("{:.4}", ratio_top_n_gram_chars),
-            );
+            // document.metadata.insert(
+            //     format!("gopher_top_{}_gram_char_ratio", n),
+            //     format!("{:.4}", ratio_top_n_gram_chars),
+            // );
             // Only apply filter if n > 0, as n=0 calculations result in 0 and thresholds are not meaningful.
             if n > 0 && ratio_top_n_gram_chars > frac_threshold {
                 filter_reasons.push(format!(
@@ -213,10 +182,10 @@ impl ProcessingStep for GopherRepetitionFilter {
             let dup_n_gram_chars = find_all_duplicate(&words, n);
             let ratio_all_dup_n_gram_chars = dup_n_gram_chars as f64 / text_char_len;
 
-            document.metadata.insert(
-                format!("gopher_all_dup_{}_gram_char_ratio", n),
-                format!("{:.4}", ratio_all_dup_n_gram_chars),
-            );
+            // document.metadata.insert(
+            //     format!("gopher_all_dup_{}_gram_char_ratio", n),
+            //     format!("{:.4}", ratio_all_dup_n_gram_chars),
+            // );
             // Only apply filter if n > 0.
             if n > 0 && ratio_all_dup_n_gram_chars > frac_threshold {
                 filter_reasons.push(format!(
