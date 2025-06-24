@@ -23,9 +23,7 @@ use std::collections::HashSet;
 const DEFAULT_FILTER_NAME: &str = "FineWebQualityFilter";
 
 // TERMINAL_PUNCTUATION in Python: (".", "?", "!", "。", "？", "！")
-fn default_stop_chars() -> HashSet<char> {
-    vec!['.', '?', '!', '。', '？', '！'].into_iter().collect()
-}
+const END_PUNCTUATION: [char; 6] = ['.', '!', '?', '"', '\'', '”'];
 
 #[derive(Debug)]
 pub struct FineWebQualityFilter {
@@ -50,7 +48,7 @@ impl FineWebQualityFilter {
         // language: String,
         stop_chars: Option<HashSet<char>>,
     ) -> Self {
-        let sc = stop_chars.unwrap_or_else(|| default_stop_chars().iter().copied().collect());
+        let sc = stop_chars.unwrap_or_else(|| END_PUNCTUATION.into());
         FineWebQualityFilter {
             line_punct_thr,
             line_punct_exclude_zero,
@@ -71,6 +69,7 @@ impl ProcessingStep for FineWebQualityFilter {
     }
 
     async fn process(&self, document: TextDocument) -> Result<TextDocument> {
+        let mut document = document;
         let text_content = &document.content;
         let lines: Vec<&str> = text_content
             .lines()
@@ -78,6 +77,12 @@ impl ProcessingStep for FineWebQualityFilter {
             .collect();
 
         if lines.is_empty() {
+            document
+                .metadata
+                .insert("fineweb_filter_status".into(), "filtered".into());
+            document
+                .metadata
+                .insert("fineweb_filter_reason".into(), "empty document".into());
             return Err(PipelineError::DocumentFiltered {
                 document: Box::new(document),
                 reason: "empty".to_string(),
@@ -101,12 +106,19 @@ impl ProcessingStep for FineWebQualityFilter {
         if line_punct_actual_ratio < self.line_punct_thr
             && !(line_punct_actual_ratio == 0.0 && self.line_punct_exclude_zero)
         {
+            let reason = format!(
+                "line_punct_ratio: {:.4} < threshold {:.4} (exclude_zero: {})",
+                line_punct_actual_ratio, self.line_punct_thr, self.line_punct_exclude_zero
+            );
+            document
+                .metadata
+                .insert("fineweb_filter_status".into(), "filtered".into());
+            document
+                .metadata
+                .insert("fineweb_filter_reason".into(), reason.clone());
             return Err(PipelineError::DocumentFiltered {
                 document: Box::new(document),
-                reason: format!(
-                    "line_punct_ratio: {:.4} < threshold {:.4} (exclude_zero: {})",
-                    line_punct_actual_ratio, self.line_punct_thr, self.line_punct_exclude_zero
-                ),
+                reason: reason,
             });
         }
 
@@ -117,12 +129,19 @@ impl ProcessingStep for FineWebQualityFilter {
             .count();
         let short_line_actual_ratio = short_lines_count as f64 / lines.len() as f64;
         if short_line_actual_ratio > self.short_line_thr {
+            let reason = format!(
+                "short_line_ratio: {:.4} > threshold {:.4}",
+                short_line_actual_ratio, self.short_line_thr
+            );
+            document
+                .metadata
+                .insert("fineweb_filter_status".into(), "filtered".into());
+            document
+                .metadata
+                .insert("fineweb_filter_reason".into(), reason.clone());
             return Err(PipelineError::DocumentFiltered {
                 document: Box::new(document),
-                reason: format!(
-                    "short_line_ratio: {:.4} > threshold {:.4}",
-                    short_line_actual_ratio, self.short_line_thr
-                ),
+                reason,
             });
         }
 
@@ -135,12 +154,19 @@ impl ProcessingStep for FineWebQualityFilter {
             0.0
         };
         if char_dup_actual_ratio > self.char_duplicates_ratio {
+            let reason = format!(
+                "char_dup_ratio: {:.4} > threshold {:.4}",
+                char_dup_actual_ratio, self.char_duplicates_ratio
+            );
+            document
+                .metadata
+                .insert("fineweb_filter_status".into(), "filtered".into());
+            document
+                .metadata
+                .insert("fineweb_filter_reason".into(), reason.clone());
             return Err(PipelineError::DocumentFiltered {
                 document: Box::new(document),
-                reason: format!(
-                    "char_dup_ratio: {:.4} > threshold {:.4}",
-                    char_dup_actual_ratio, self.char_duplicates_ratio
-                ),
+                reason: reason,
             });
         }
 
@@ -150,20 +176,34 @@ impl ProcessingStep for FineWebQualityFilter {
 
         if words.is_empty() {
             if new_line_count > 0 {
+                let reason = "list_ratio_no_words (newlines present but no words)".to_string();
+                document
+                    .metadata
+                    .insert("fineweb_filter_status".into(), "filtered".into());
+                document
+                    .metadata
+                    .insert("fineweb_filter_reason".into(), reason.clone());
                 return Err(PipelineError::DocumentFiltered {
                     document: Box::new(document),
-                    reason: "list_ratio_no_words (newlines present but no words)".to_string(),
+                    reason: reason,
                 });
             }
         } else {
             let list_actual_ratio = new_line_count as f64 / words.len() as f64;
             if list_actual_ratio > self.new_line_ratio {
+                let reason = format!(
+                    "list_ratio: {:.4} > threshold {:.4}",
+                    list_actual_ratio, self.new_line_ratio
+                );
+                document
+                    .metadata
+                    .insert("fineweb_filter_status".into(), "filtered".into());
+                document
+                    .metadata
+                    .insert("fineweb_filter_reason".into(), reason.clone());
                 return Err(PipelineError::DocumentFiltered {
                     document: Box::new(document),
-                    reason: format!(
-                        "list_ratio: {:.4} > threshold {:.4}",
-                        list_actual_ratio, self.new_line_ratio
-                    ),
+                    reason: reason,
                 });
             }
         }
@@ -190,7 +230,7 @@ mod tests {
         FineWebQualityFilter {
             line_punct_thr: DEFAULT_LINE_PUNCT_THR,
             line_punct_exclude_zero: DEFAULT_LINE_PUNCT_EXCLUDE_ZERO,
-            stop_chars: default_stop_chars(),
+            stop_chars: END_PUNCTUATION.into(),
             short_line_thr: DEFAULT_SHORT_LINE_THR,
             short_line_length: DEFAULT_SHORT_LINE_LENGTH,
             char_duplicates_ratio: 0.95, // Temporarily very high to isolate other test failures

@@ -37,9 +37,10 @@ tokio-executor-trait = "2.1"
 tokio-reactor-trait = "1.1"
 chrono = { version = "0.4.41", features = ["serde"] }
 serde_yaml = "0.9.34"
-whatlang = "0.16.4"
 anyhow = "1.0.98"
 tokenizers = { version = "0.21", features = ["http"] } # Specify version and add http feature
+html-escape = "0.2.13"
+lingua = "1.7.2"
 
 # {{ Define the library (implicitly done by having src/lib.rs) }}
 # [lib]

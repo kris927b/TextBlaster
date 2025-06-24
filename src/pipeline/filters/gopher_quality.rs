@@ -135,7 +135,7 @@ impl ProcessingStep for GopherQualityFilter {
             .iter()
             .filter(|&&l| {
                 let ls = l.trim_start();
-                ls.starts_with('•') || ls.starts_with('-') || ls.starts_with('*')
+                ls.starts_with('•') || ls.starts_with('-')
                 // Common bullet chars
             })
             .count();

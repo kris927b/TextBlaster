@@ -9,26 +9,25 @@ use lazy_static::lazy_static;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use regex::Regex;
-use reqwest::blocking::Client; // For HTTP client
+use reqwest::blocking::Client;
 use std::collections::HashMap;
 use std::fs::{self}; // Added fs::File
 use std::path::PathBuf; // Added Path, PathBuf
-use std::sync::Mutex; // Added Mutex for interior mutability
+use std::sync::Mutex;
+use tracing::info; // For HTTP client // Added Mutex for interior mutability
 
 // Constants based on C4 and reference implementation
-const END_PUNCTUATION: [char; 4] = ['.', '!', '?', '"'];
+const END_PUNCTUATION: [char; 6] = ['.', '!', '?', '"', '\'', '”'];
 const ELLIPSIS: &str = "...";
 
 lazy_static! {
     static ref POLICY_SUBSTRINGS: Vec<&'static str> = vec![
-        "cookie",
-        "cookies",
         "terms of use",
         "privacy policy",
-        "gdpr",
-        "ccpa",
-        "california consumer privacy act",
-        "do not sell my personal information",
+        "cookie policy",
+        "uses cookies",
+        "use of cookies",
+        "use cookies",
     ];
     // Simple regex for Wikipedia-style citations like [1], [2, 3], [45]
     static ref CITATION_REGEX: Regex = Regex::new(r"\[\d+(?:,\s*\d+)*\]").expect("Invalid regex");
@@ -156,6 +155,10 @@ impl ProcessingStep for C4QualityFilter {
             split_into_sentences(&document.content) // Default to lines for now
         };
 
+        if document.id == "danske-taler_2572" {
+            info!("{}", document.content);
+        }
+
         let mut kept_lines: Vec<String> = Vec::new();
         let mut filter_reasons: Vec<String> = Vec::new();
 
@@ -163,7 +166,9 @@ impl ProcessingStep for C4QualityFilter {
         if self.filter_lorem_ipsum && original_content.to_lowercase().contains("lorem ipsum") {
             filter_reasons.push("lorem_ipsum".to_string());
         }
-        if self.filter_curly_bracket && original_content.contains('{') {
+        if self.filter_curly_bracket
+            && (original_content.contains('{') || original_content.contains('}'))
+        {
             filter_reasons.push("curly_bracket".to_string());
         }
 
@@ -180,6 +185,8 @@ impl ProcessingStep for C4QualityFilter {
                 reason: reasons_string,
             });
         }
+
+        let mut line_stats: HashMap<String, i32> = HashMap::new();
 
         // Line-by-line filtering
         for line in lines {
@@ -202,6 +209,9 @@ impl ProcessingStep for C4QualityFilter {
                         .iter()
                         .any(|w| w.chars().count() > self.max_word_length)
                 {
+                    *line_stats
+                        .entry("line-filter-too_long_word".to_string())
+                        .or_insert(0) += 1;
                     continue; // Drop line
                 }
 
@@ -214,12 +224,18 @@ impl ProcessingStep for C4QualityFilter {
                     let ends_with_ellipsis = processed_line.ends_with(ELLIPSIS);
 
                     if !ends_with_terminal_punct || ends_with_ellipsis {
+                        *line_stats
+                            .entry("line-filter-no_terminal_punc".to_string())
+                            .or_insert(0) += 1;
                         continue; // Drop line
                     }
                 }
 
                 // min words per line
                 if self.min_words_per_line > 0 && words.len() < self.min_words_per_line {
+                    *line_stats
+                        .entry("line-filter-too_few_words".to_string())
+                        .or_insert(0) += 1;
                     continue; // Drop line
                 }
 
@@ -261,6 +277,11 @@ impl ProcessingStep for C4QualityFilter {
             document
                 .metadata
                 .insert("c4_filter_reasons".to_string(), reasons_string.clone());
+
+            for (key, value) in &line_stats {
+                document.metadata.insert(key.to_string(), value.to_string());
+            }
+
             Err(PipelineError::DocumentFiltered {
                 document: Box::new(document),
                 reason: reasons_string,

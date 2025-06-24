@@ -2,18 +2,6 @@ pipeline:
   - type: LanguageDetectionFilter
     min_confidence: 0.65
     allowed_languages: [ "dan" ]
-    
-  - type: C4QualityFilter
-    split_paragraph: false
-    remove_citations: true
-    filter_no_terminal_punct: true
-    min_num_sentences: 10
-    min_words_per_line: 3
-    max_word_length: 15
-    filter_lorem_ipsum: true
-    filter_javascript: true
-    filter_curly_bracket: true
-    filter_policy: true
 
   - type: GopherRepetitionFilter
     dup_line_frac: 0.3
@@ -34,7 +22,7 @@ pipeline:
 
   - type: GopherQualityFilter
     min_doc_words: 50
-    max_doc_words: 1000000
+    max_doc_words: 100000
     min_avg_word_length: 3.0
     max_avg_word_length: 10.0
     max_symbol_word_ratio: 0.1
@@ -64,6 +52,18 @@ pipeline:
         "to", "tre", "ud", "uden", "under", "undtagen", "var", "ved", "vi", "vil", "ville", "vor",
         "vore", "vores", "vær", "være", "været", "øh"
     ]
+
+  - type: C4QualityFilter
+    split_paragraph: true
+    remove_citations: true
+    filter_no_terminal_punct: true
+    min_num_sentences: 5
+    min_words_per_line: 3
+    max_word_length: 1000
+    filter_lorem_ipsum: true
+    filter_javascript: true
+    filter_curly_bracket: true
+    filter_policy: true
 
   # - type: C4BadWordsFilter
   #   keep_fraction: 0.1 # Keep 10% of documents with bad words

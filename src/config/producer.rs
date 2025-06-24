@@ -14,7 +14,7 @@ pub struct Args {
     pub text_column: String,
 
     /// Optional ID column name in the Parquet file
-    #[arg(long)]
+    #[arg(long, default_value = "id")]
     pub id_column: Option<String>,
 
     /// RabbitMQ connection string (e.g., amqp://guest:guest@localhost:5672/%2f)

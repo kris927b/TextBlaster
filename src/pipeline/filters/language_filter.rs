@@ -1,17 +1,24 @@
-use async_trait::async_trait;
-use whatlang::{detect, Lang};
-
 use crate::data_model::TextDocument;
 use crate::error::{PipelineError, Result};
 use crate::executor::ProcessingStep;
+use async_trait::async_trait;
+use lingua::{IsoCode639_3, Language, LanguageDetectorBuilder};
 
 pub struct LanguageDetectionFilter {
     min_confidence: f64,
-    allowed_languages: Vec<String>,
+    allowed_languages: Vec<Language>,
 }
 
 impl LanguageDetectionFilter {
-    pub fn new(min_confidence: f64, allowed_languages: Vec<String>) -> Self {
+    pub fn new(min_confidence: f64, allowed_langs: Vec<String>) -> Self {
+        let allowed_languages: Vec<Language> = allowed_langs
+            .iter()
+            .filter_map(|code| {
+                IsoCode639_3::try_from(code.as_str())
+                    .ok()
+                    .and_then(|iso| Some(Language::from_iso_code_639_3(&iso)))
+            })
+            .collect();
         LanguageDetectionFilter {
             min_confidence,
             allowed_languages,
@@ -29,38 +36,59 @@ impl ProcessingStep for LanguageDetectionFilter {
         let mut document = document;
         let text = &document.content;
 
-        let lang_detect = detect(text).unwrap();
-        let lang: Lang = lang_detect.lang();
-        let confidence = lang_detect.confidence();
+        let detector = LanguageDetectorBuilder::from_languages(&[
+            Language::English,
+            Language::Danish,
+            Language::Swedish,
+            Language::Nynorsk,
+            Language::Bokmal,
+        ])
+        .build();
 
-        document
-            .metadata
-            .insert("Detected language".into(), lang.name().into());
-        document.metadata.insert(
-            "Detected language confidence".into(),
-            confidence.to_string(),
-        );
+        if let Some(lang) = detector.detect_language_of(text) {
+            let confidence = detector.compute_language_confidence(text, lang);
 
-        if !self.allowed_languages.contains(&lang.code().into()) {
-            let reason = format!(
-                "Document is not any of the following languages: {}",
-                self.allowed_languages.join("; ")
+            document
+                .metadata
+                .insert("Detected language".into(), lang.to_string());
+            document.metadata.insert(
+                "Detected language confidence".into(),
+                confidence.to_string(),
             );
-            Err(PipelineError::DocumentFiltered {
-                document: Box::new(document),
-                reason,
-            })
-        } else if confidence < self.min_confidence {
-            let reason = format!(
-                "Language detection confidence is not satified: {} < {}",
-                confidence, self.min_confidence
-            );
-            Err(PipelineError::DocumentFiltered {
-                document: Box::new(document),
-                reason,
-            })
+
+            if !self.allowed_languages.contains(&lang) {
+                let langs: Vec<String> = self
+                    .allowed_languages
+                    .clone()
+                    .into_iter()
+                    .map(|lang| lang.iso_code_639_3().to_string())
+                    .collect();
+                let reason = format!(
+                    "Document is not any of the following languages: {:?}",
+                    langs.join("; ")
+                );
+                Err(PipelineError::DocumentFiltered {
+                    document: Box::new(document),
+                    reason,
+                })
+            } else if confidence < self.min_confidence {
+                let reason = format!(
+                    "Language detection confidence is not satified: {} < {}",
+                    confidence, self.min_confidence
+                );
+                Err(PipelineError::DocumentFiltered {
+                    document: Box::new(document),
+                    reason,
+                })
+            } else {
+                Ok(document)
+            }
         } else {
-            Ok(document)
+            let reason = "Language could not be confidently detected".to_string();
+            Err(PipelineError::DocumentFiltered {
+                document: Box::new(document),
+                reason,
+            })
         }
     }
 }
@@ -107,17 +135,25 @@ mod tests {
 
     #[tokio::test]
     async fn test_disallowed_language() {
-        let document = create_test_doc("doc2", "Ceci est un document de test en français.");
+        let document = create_test_doc("doc2", "Hej med dig. Dette er Dansk");
         let filter = LanguageDetectionFilter::new(0.8, vec!["eng".to_string()]); // Only allow English
         let result = filter.process(document).await;
 
-        assert!(result.is_err());
+        assert!(
+            result.is_err(),
+            "Expected error. Got text: {}",
+            result.unwrap().content
+        );
         match result.err().unwrap() {
             PipelineError::DocumentFiltered {
                 document: _,
                 reason,
             } => {
-                assert!(reason.contains("Document is not any of the following languages: eng"));
+                assert!(
+                    reason.contains("Document is not any of the following languages: \"eng\""),
+                    "The actual reason: {}",
+                    reason
+                );
             }
             _ => panic!("Expected DocumentFiltered error"),
         }
@@ -126,7 +162,7 @@ mod tests {
     #[tokio::test]
     async fn test_confident_but_disallowed_language() {
         // "Hola Mundo" is Spanish and should be detected with high confidence.
-        let document = create_test_doc("doc3", "Hola Mundo");
+        let document = create_test_doc("doc3", "Jag talar lite svenska.");
         // Allow only English, with a standard confidence threshold.
         let filter = LanguageDetectionFilter::new(0.8, vec!["eng".to_string()]);
         let result = filter.process(document).await;
@@ -140,7 +176,7 @@ mod tests {
                 // The primary reason for filtering should be the language not being allowed,
                 // even if confidence would have been sufficient.
                 assert!(
-                    reason.contains("Document is not any of the following languages: eng"),
+                    reason.contains("Document is not any of the following languages: \"eng\""),
                     "Unexpected reason: {}",
                     reason
                 );
@@ -156,7 +192,7 @@ mod tests {
     #[tokio::test]
     async fn test_allowed_language_low_confidence() {
         // "a b c" is English, but very short, likely leading to low confidence.
-        let document = create_test_doc("doc5", "text arrives out of thin air");
+        let document = create_test_doc("doc5", "Text arrives out of thin air");
         // Allow English, but require a very high confidence that "a b c" won't meet.
         let filter = LanguageDetectionFilter::new(0.99, vec!["eng".to_string()]);
         let result = filter.process(document).await;
@@ -172,7 +208,7 @@ mod tests {
                                                       // and that the reason is low confidence.
                 assert!(
                     processed_doc.metadata.get("Detected language").is_some(),
-                    "Detected language should be in metadata even if filtered for low confidence"
+                    "Detected language should be in metadata even if filtered for low confidence. Reason: {}",reason
                 );
                 // whatlang detects "a b c" as English.
                 assert_eq!(
