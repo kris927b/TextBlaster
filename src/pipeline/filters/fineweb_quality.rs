@@ -146,10 +146,23 @@ impl ProcessingStep for FineWebQualityFilter {
         }
 
         // Character duplication ratio
-        let vec_line: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
-        let (repeated_char_count, total_chars_for_dup_ratio) = find_duplicates(&vec_line);
-        let char_dup_actual_ratio = if total_chars_for_dup_ratio > 0 {
-            repeated_char_count as f64 / total_chars_for_dup_ratio as f64
+        // 1. Filter non-empty lines
+        let non_empty_lines: Vec<String> = lines
+            .iter()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| line.to_string())
+            .collect();
+
+        // 2. Count total characters in doc (excluding newlines)
+        let total_chars_no_newlines: usize =
+            document.content.chars().filter(|&c| c != '\n').count();
+
+        // 3. Find duplicates among non-empty lines
+        let (_dup_count, dup_char_count) = find_duplicates(&non_empty_lines);
+
+        // 4. Compute ratio
+        let char_dup_actual_ratio = if total_chars_no_newlines > 0 {
+            dup_char_count as f64 / total_chars_no_newlines as f64
         } else {
             0.0
         };
