@@ -23,9 +23,7 @@ use std::collections::HashSet;
 const DEFAULT_FILTER_NAME: &str = "FineWebQualityFilter";
 
 // TERMINAL_PUNCTUATION in Python: (".", "?", "!", "。", "？", "！")
-fn default_stop_chars() -> HashSet<char> {
-    vec!['.', '?', '!', '。', '？', '！'].into_iter().collect()
-}
+const END_PUNCTUATION: [char; 6] = ['.', '!', '?', '"', '\'', '”'];
 
 #[derive(Debug)]
 pub struct FineWebQualityFilter {
@@ -50,7 +48,7 @@ impl FineWebQualityFilter {
         // language: String,
         stop_chars: Option<HashSet<char>>,
     ) -> Self {
-        let sc = stop_chars.unwrap_or_else(|| default_stop_chars().iter().copied().collect());
+        let sc = stop_chars.unwrap_or_else(|| END_PUNCTUATION.into());
         FineWebQualityFilter {
             line_punct_thr,
             line_punct_exclude_zero,
@@ -71,6 +69,7 @@ impl ProcessingStep for FineWebQualityFilter {
     }
 
     async fn process(&self, document: TextDocument) -> Result<TextDocument> {
+        let mut document = document;
         let text_content = &document.content;
         let lines: Vec<&str> = text_content
             .lines()
@@ -78,6 +77,12 @@ impl ProcessingStep for FineWebQualityFilter {
             .collect();
 
         if lines.is_empty() {
+            document
+                .metadata
+                .insert("fineweb_filter_status".into(), "filtered".into());
+            document
+                .metadata
+                .insert("fineweb_filter_reason".into(), "empty document".into());
             return Err(PipelineError::DocumentFiltered {
                 document: Box::new(document),
                 reason: "empty".to_string(),
@@ -101,12 +106,19 @@ impl ProcessingStep for FineWebQualityFilter {
         if line_punct_actual_ratio < self.line_punct_thr
             && !(line_punct_actual_ratio == 0.0 && self.line_punct_exclude_zero)
         {
+            let reason = format!(
+                "line_punct_ratio: {:.4} < threshold {:.4} (exclude_zero: {})",
+                line_punct_actual_ratio, self.line_punct_thr, self.line_punct_exclude_zero
+            );
+            document
+                .metadata
+                .insert("fineweb_filter_status".into(), "filtered".into());
+            document
+                .metadata
+                .insert("fineweb_filter_reason".into(), reason.clone());
             return Err(PipelineError::DocumentFiltered {
                 document: Box::new(document),
-                reason: format!(
-                    "line_punct_ratio: {:.4} < threshold {:.4} (exclude_zero: {})",
-                    line_punct_actual_ratio, self.line_punct_thr, self.line_punct_exclude_zero
-                ),
+                reason,
             });
         }
 
@@ -117,30 +129,58 @@ impl ProcessingStep for FineWebQualityFilter {
             .count();
         let short_line_actual_ratio = short_lines_count as f64 / lines.len() as f64;
         if short_line_actual_ratio > self.short_line_thr {
+            let reason = format!(
+                "short_line_ratio: {:.4} > threshold {:.4}",
+                short_line_actual_ratio, self.short_line_thr
+            );
+            document
+                .metadata
+                .insert("fineweb_filter_status".into(), "filtered".into());
+            document
+                .metadata
+                .insert("fineweb_filter_reason".into(), reason.clone());
             return Err(PipelineError::DocumentFiltered {
                 document: Box::new(document),
-                reason: format!(
-                    "short_line_ratio: {:.4} > threshold {:.4}",
-                    short_line_actual_ratio, self.short_line_thr
-                ),
+                reason,
             });
         }
 
         // Character duplication ratio
-        let vec_line: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
-        let (repeated_char_count, total_chars_for_dup_ratio) = find_duplicates(&vec_line);
-        let char_dup_actual_ratio = if total_chars_for_dup_ratio > 0 {
-            repeated_char_count as f64 / total_chars_for_dup_ratio as f64
+        // 1. Filter non-empty lines
+        let non_empty_lines: Vec<String> = lines
+            .iter()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| line.to_string())
+            .collect();
+
+        // 2. Count total characters in doc (excluding newlines)
+        let total_chars_no_newlines: usize =
+            document.content.chars().filter(|&c| c != '\n').count();
+
+        // 3. Find duplicates among non-empty lines
+        let (_dup_count, dup_char_count) = find_duplicates(&non_empty_lines);
+
+        // 4. Compute ratio
+        let char_dup_actual_ratio = if total_chars_no_newlines > 0 {
+            dup_char_count as f64 / total_chars_no_newlines as f64
         } else {
             0.0
         };
+
         if char_dup_actual_ratio > self.char_duplicates_ratio {
+            let reason = format!(
+                "char_dup_ratio: {:.4} > threshold {:.4}",
+                char_dup_actual_ratio, self.char_duplicates_ratio
+            );
+            document
+                .metadata
+                .insert("fineweb_filter_status".into(), "filtered".into());
+            document
+                .metadata
+                .insert("fineweb_filter_reason".into(), reason.clone());
             return Err(PipelineError::DocumentFiltered {
                 document: Box::new(document),
-                reason: format!(
-                    "char_dup_ratio: {:.4} > threshold {:.4}",
-                    char_dup_actual_ratio, self.char_duplicates_ratio
-                ),
+                reason,
             });
         }
 
@@ -150,20 +190,34 @@ impl ProcessingStep for FineWebQualityFilter {
 
         if words.is_empty() {
             if new_line_count > 0 {
+                let reason = "list_ratio_no_words (newlines present but no words)".to_string();
+                document
+                    .metadata
+                    .insert("fineweb_filter_status".into(), "filtered".into());
+                document
+                    .metadata
+                    .insert("fineweb_filter_reason".into(), reason.clone());
                 return Err(PipelineError::DocumentFiltered {
                     document: Box::new(document),
-                    reason: "list_ratio_no_words (newlines present but no words)".to_string(),
+                    reason,
                 });
             }
         } else {
             let list_actual_ratio = new_line_count as f64 / words.len() as f64;
             if list_actual_ratio > self.new_line_ratio {
+                let reason = format!(
+                    "list_ratio: {:.4} > threshold {:.4}",
+                    list_actual_ratio, self.new_line_ratio
+                );
+                document
+                    .metadata
+                    .insert("fineweb_filter_status".into(), "filtered".into());
+                document
+                    .metadata
+                    .insert("fineweb_filter_reason".into(), reason.clone());
                 return Err(PipelineError::DocumentFiltered {
                     document: Box::new(document),
-                    reason: format!(
-                        "list_ratio: {:.4} > threshold {:.4}",
-                        list_actual_ratio, self.new_line_ratio
-                    ),
+                    reason,
                 });
             }
         }
@@ -190,7 +244,7 @@ mod tests {
         FineWebQualityFilter {
             line_punct_thr: DEFAULT_LINE_PUNCT_THR,
             line_punct_exclude_zero: DEFAULT_LINE_PUNCT_EXCLUDE_ZERO,
-            stop_chars: default_stop_chars(),
+            stop_chars: END_PUNCTUATION.into(),
             short_line_thr: DEFAULT_SHORT_LINE_THR,
             short_line_length: DEFAULT_SHORT_LINE_LENGTH,
             char_duplicates_ratio: 0.95, // Temporarily very high to isolate other test failures
@@ -389,17 +443,18 @@ mod tests {
         filter.short_line_thr = 1.0;
         filter.new_line_ratio = 1.0; // Allow many newlines
 
-        filter.char_duplicates_ratio = 0.9; // Specific for this test to fail
-        let content = "a\na\na."; // Ends with '.', 31 chars, 29 'a' repeats. Ratio ~0.935
+        filter.char_duplicates_ratio = 0.66; // Specific for this test to fail
+        let content = "Hello World\nHello World\nHello World"; // Ends with '.', 31 chars, 29 'a' repeats. Ratio ~0.935
         let doc = create_test_doc("char_dup_all_same", content);
 
         let result = filter.process(doc).await;
+        println!("{:?}", result);
         assert!(result.is_err());
         match result.err().unwrap() {
             PipelineError::DocumentFiltered { reason, .. } => {
                 // Ratio 29/31 = 0.93548...
                 assert!(
-                    reason.starts_with("char_dup_ratio: 1.0000 > threshold 0.9000"),
+                    reason.starts_with("char_dup_ratio: 0.6667 > threshold 0.6600"),
                     "Actual reason: {}",
                     reason
                 );

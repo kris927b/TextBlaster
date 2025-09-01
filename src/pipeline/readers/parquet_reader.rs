@@ -174,7 +174,9 @@ impl BaseReader for ParquetReader {
 
                                 let id = id_arr.value(i).to_string();
 
-                                let content = text_arr.value(i).to_string();
+                                let raw_text = text_arr.value(i);
+                                let content =
+                                    html_escape::decode_html_entities(raw_text).to_string();
 
                                 let source_val = source_arr
                                     .as_ref()

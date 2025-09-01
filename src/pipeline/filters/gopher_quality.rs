@@ -72,10 +72,10 @@ impl ProcessingStep for GopherQualityFilter {
 
         let words = split_into_words(text);
         let n_total_words = words.len();
-        document.metadata.insert(
-            "gopher_quality_metric_total_word_count".to_string(),
-            n_total_words.to_string(),
-        );
+        // document.metadata.insert(
+        //     "gopher_quality_metric_total_word_count".to_string(),
+        //     n_total_words.to_string(),
+        // );
 
         let non_symbol_words: Vec<&str> = words
             .iter()
@@ -83,10 +83,10 @@ impl ProcessingStep for GopherQualityFilter {
             .copied()
             .collect();
         let n_non_symbol_words = non_symbol_words.len();
-        document.metadata.insert(
-            "gopher_quality_metric_non_symbol_word_count".to_string(),
-            n_non_symbol_words.to_string(),
-        );
+        // document.metadata.insert(
+        //     "gopher_quality_metric_non_symbol_word_count".to_string(),
+        //     n_non_symbol_words.to_string(),
+        // );
 
         let avg_word_len_non_symbol = if n_non_symbol_words > 0 {
             let sum_len: usize = non_symbol_words.iter().map(|w| w.chars().count()).sum();
@@ -94,60 +94,60 @@ impl ProcessingStep for GopherQualityFilter {
         } else {
             0.0
         };
-        document.metadata.insert(
-            "gopher_quality_metric_avg_word_len_char_non_symbol".to_string(),
-            format!("{:.4}", avg_word_len_non_symbol),
-        );
+        // document.metadata.insert(
+        //     "gopher_quality_metric_avg_word_len_char_non_symbol".to_string(),
+        //     format!("{:.4}", avg_word_len_non_symbol),
+        // );
 
         let n_total_words_calc = n_total_words.max(1) as f64; // Denominator for ratios
 
         let hash_char_count = text.chars().filter(|&c| c == '#').count();
         let hash_char_ratio_vs_total_words = hash_char_count as f64 / n_total_words_calc;
-        document.metadata.insert(
-            "gopher_quality_metric_hash_char_count".to_string(),
-            hash_char_count.to_string(),
-        );
-        document.metadata.insert(
-            "gopher_quality_metric_hash_char_ratio_vs_total_words".to_string(),
-            format!("{:.4}", hash_char_ratio_vs_total_words),
-        );
+        // document.metadata.insert(
+        //     "gopher_quality_metric_hash_char_count".to_string(),
+        //     hash_char_count.to_string(),
+        // );
+        // document.metadata.insert(
+        //     "gopher_quality_metric_hash_char_ratio_vs_total_words".to_string(),
+        //     format!("{:.4}", hash_char_ratio_vs_total_words),
+        // );
 
         let ellipsis_unit_count = text.matches("...").count() + text.matches("…").count();
         let ellipsis_unit_ratio_vs_total_words = ellipsis_unit_count as f64 / n_total_words_calc;
-        document.metadata.insert(
-            "gopher_quality_metric_ellipsis_unit_count".to_string(),
-            ellipsis_unit_count.to_string(),
-        );
-        document.metadata.insert(
-            "gopher_quality_metric_ellipsis_unit_ratio_vs_total_words".to_string(),
-            format!("{:.4}", ellipsis_unit_ratio_vs_total_words),
-        );
+        // document.metadata.insert(
+        //     "gopher_quality_metric_ellipsis_unit_count".to_string(),
+        //     ellipsis_unit_count.to_string(),
+        // );
+        // document.metadata.insert(
+        //     "gopher_quality_metric_ellipsis_unit_ratio_vs_total_words".to_string(),
+        //     format!("{:.4}", ellipsis_unit_ratio_vs_total_words),
+        // );
 
         let lines: Vec<&str> = text.lines().collect();
         let n_lines_val = lines.len();
         let n_lines_calc = n_lines_val.max(1) as f64; // Denominator for line ratios
-        document.metadata.insert(
-            "gopher_quality_metric_total_line_count".to_string(),
-            n_lines_val.to_string(),
-        );
+                                                      // document.metadata.insert(
+                                                      //     "gopher_quality_metric_total_line_count".to_string(),
+                                                      //     n_lines_val.to_string(),
+                                                      // );
 
         let bullet_line_count = lines
             .iter()
             .filter(|&&l| {
                 let ls = l.trim_start();
-                ls.starts_with('•') || ls.starts_with('-') || ls.starts_with('*')
+                ls.starts_with('•') || ls.starts_with('-')
                 // Common bullet chars
             })
             .count();
         let bullet_line_ratio = bullet_line_count as f64 / n_lines_calc;
-        document.metadata.insert(
-            "gopher_quality_metric_bullet_line_count".to_string(),
-            bullet_line_count.to_string(),
-        );
-        document.metadata.insert(
-            "gopher_quality_metric_bullet_line_ratio".to_string(),
-            format!("{:.4}", bullet_line_ratio),
-        );
+        // document.metadata.insert(
+        //     "gopher_quality_metric_bullet_line_count".to_string(),
+        //     bullet_line_count.to_string(),
+        // );
+        // document.metadata.insert(
+        //     "gopher_quality_metric_bullet_line_ratio".to_string(),
+        //     format!("{:.4}", bullet_line_ratio),
+        // );
 
         let ellipsis_line_count = lines
             .iter()
@@ -157,14 +157,14 @@ impl ProcessingStep for GopherQualityFilter {
             })
             .count();
         let ellipsis_line_ratio = ellipsis_line_count as f64 / n_lines_calc;
-        document.metadata.insert(
-            "gopher_quality_metric_ellipsis_line_count".to_string(),
-            ellipsis_line_count.to_string(),
-        );
-        document.metadata.insert(
-            "gopher_quality_metric_ellipsis_line_ratio".to_string(),
-            format!("{:.4}", ellipsis_line_ratio),
-        );
+        // document.metadata.insert(
+        //     "gopher_quality_metric_ellipsis_line_count".to_string(),
+        //     ellipsis_line_count.to_string(),
+        // );
+        // document.metadata.insert(
+        //     "gopher_quality_metric_ellipsis_line_ratio".to_string(),
+        //     format!("{:.4}", ellipsis_line_ratio),
+        // );
 
         let alphabetic_word_count = words
             .iter()
@@ -172,23 +172,23 @@ impl ProcessingStep for GopherQualityFilter {
             .count();
         let alphabetic_word_ratio_vs_total_words =
             alphabetic_word_count as f64 / n_total_words_calc;
-        document.metadata.insert(
-            "gopher_quality_metric_alphabetic_word_count".to_string(),
-            alphabetic_word_count.to_string(),
-        );
-        document.metadata.insert(
-            "gopher_quality_metric_alphabetic_word_ratio_vs_total_words".to_string(),
-            format!("{:.4}", alphabetic_word_ratio_vs_total_words),
-        );
+        // document.metadata.insert(
+        //     "gopher_quality_metric_alphabetic_word_count".to_string(),
+        //     alphabetic_word_count.to_string(),
+        // );
+        // document.metadata.insert(
+        //     "gopher_quality_metric_alphabetic_word_ratio_vs_total_words".to_string(),
+        //     format!("{:.4}", alphabetic_word_ratio_vs_total_words),
+        // );
 
         let stop_word_count = words
             .iter()
             .filter(|w| self.stop_words.contains(w.to_lowercase().as_str()))
             .count();
-        document.metadata.insert(
-            "gopher_quality_metric_stop_word_count".to_string(),
-            stop_word_count.to_string(),
-        );
+        // document.metadata.insert(
+        //     "gopher_quality_metric_stop_word_count".to_string(),
+        //     stop_word_count.to_string(),
+        // );
 
         let mut filter_reasons: Vec<String> = Vec::new();
 
@@ -275,11 +275,10 @@ impl ProcessingStep for GopherQualityFilter {
 
         // Alphabetic-word ratio
         if let Some(max_non_alpha_ratio) = self.max_non_alpha_words_ratio {
-            let min_required_alpha_ratio = 1.0 - max_non_alpha_ratio;
-            if alphabetic_word_ratio_vs_total_words < min_required_alpha_ratio {
+            if alphabetic_word_ratio_vs_total_words < max_non_alpha_ratio {
                 filter_reasons.push(format!(
                     "gopher_below_alpha_threshold (alpha ratio {:.2}, required min {:.2})",
-                    alphabetic_word_ratio_vs_total_words, min_required_alpha_ratio
+                    alphabetic_word_ratio_vs_total_words, max_non_alpha_ratio
                 ));
             }
         }

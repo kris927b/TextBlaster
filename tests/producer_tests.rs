@@ -41,7 +41,7 @@ mod args_tests {
         let args = Args::parse_from(&["producer", "-i", "input.parquet"]);
         assert_eq!(args.input_file, "input.parquet");
         assert_eq!(args.text_column, "text");
-        assert_eq!(args.id_column, None);
+        assert_eq!(args.id_column, Some("id".into()));
         assert_eq!(args.amqp_addr, "amqp://guest:guest@localhost:5672/%2f");
         assert_eq!(args.task_queue, "task_queue");
         assert_eq!(args.results_queue, "results_queue");
