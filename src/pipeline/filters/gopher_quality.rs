@@ -275,11 +275,10 @@ impl ProcessingStep for GopherQualityFilter {
 
         // Alphabetic-word ratio
         if let Some(max_non_alpha_ratio) = self.max_non_alpha_words_ratio {
-            let min_required_alpha_ratio = 1.0 - max_non_alpha_ratio;
-            if alphabetic_word_ratio_vs_total_words < min_required_alpha_ratio {
+            if alphabetic_word_ratio_vs_total_words < max_non_alpha_ratio {
                 filter_reasons.push(format!(
                     "gopher_below_alpha_threshold (alpha ratio {:.2}, required min {:.2})",
-                    alphabetic_word_ratio_vs_total_words, min_required_alpha_ratio
+                    alphabetic_word_ratio_vs_total_words, max_non_alpha_ratio
                 ));
             }
         }
