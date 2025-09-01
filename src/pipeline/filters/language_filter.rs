@@ -16,7 +16,7 @@ impl LanguageDetectionFilter {
             .filter_map(|code| {
                 IsoCode639_3::try_from(code.as_str())
                     .ok()
-                    .and_then(|iso| Some(Language::from_iso_code_639_3(&iso)))
+                    .map(|iso| Language::from_iso_code_639_3(&iso))
             })
             .collect();
         LanguageDetectionFilter {
