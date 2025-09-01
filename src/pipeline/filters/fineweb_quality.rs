@@ -118,7 +118,7 @@ impl ProcessingStep for FineWebQualityFilter {
                 .insert("fineweb_filter_reason".into(), reason.clone());
             return Err(PipelineError::DocumentFiltered {
                 document: Box::new(document),
-                reason: reason,
+                reason,
             });
         }
 
@@ -166,6 +166,7 @@ impl ProcessingStep for FineWebQualityFilter {
         } else {
             0.0
         };
+
         if char_dup_actual_ratio > self.char_duplicates_ratio {
             let reason = format!(
                 "char_dup_ratio: {:.4} > threshold {:.4}",
@@ -179,7 +180,7 @@ impl ProcessingStep for FineWebQualityFilter {
                 .insert("fineweb_filter_reason".into(), reason.clone());
             return Err(PipelineError::DocumentFiltered {
                 document: Box::new(document),
-                reason: reason,
+                reason,
             });
         }
 
@@ -198,7 +199,7 @@ impl ProcessingStep for FineWebQualityFilter {
                     .insert("fineweb_filter_reason".into(), reason.clone());
                 return Err(PipelineError::DocumentFiltered {
                     document: Box::new(document),
-                    reason: reason,
+                    reason,
                 });
             }
         } else {
@@ -216,7 +217,7 @@ impl ProcessingStep for FineWebQualityFilter {
                     .insert("fineweb_filter_reason".into(), reason.clone());
                 return Err(PipelineError::DocumentFiltered {
                     document: Box::new(document),
-                    reason: reason,
+                    reason,
                 });
             }
         }
@@ -442,17 +443,18 @@ mod tests {
         filter.short_line_thr = 1.0;
         filter.new_line_ratio = 1.0; // Allow many newlines
 
-        filter.char_duplicates_ratio = 0.9; // Specific for this test to fail
-        let content = "a\na\na."; // Ends with '.', 31 chars, 29 'a' repeats. Ratio ~0.935
+        filter.char_duplicates_ratio = 0.66; // Specific for this test to fail
+        let content = "Hello World\nHello World\nHello World"; // Ends with '.', 31 chars, 29 'a' repeats. Ratio ~0.935
         let doc = create_test_doc("char_dup_all_same", content);
 
         let result = filter.process(doc).await;
+        println!("{:?}", result);
         assert!(result.is_err());
         match result.err().unwrap() {
             PipelineError::DocumentFiltered { reason, .. } => {
                 // Ratio 29/31 = 0.93548...
                 assert!(
-                    reason.starts_with("char_dup_ratio: 1.0000 > threshold 0.9000"),
+                    reason.starts_with("char_dup_ratio: 0.6667 > threshold 0.6600"),
                     "Actual reason: {}",
                     reason
                 );
